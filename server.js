@@ -159,12 +159,14 @@ function saveReports(reports) {
 }
 
 function reportsForTopic(topicId) {
+  // Latest = most recently saved (created_at), not farthest period_end —
+  // a backdated Amber must not hide a newer Green with an earlier period.
   return loadReports()
     .filter((r) => r.topic_id === topicId)
     .sort((a, b) => {
-      const pe = (b.period_end || '').localeCompare(a.period_end || '');
-      if (pe !== 0) return pe;
-      return (b.created_at || '').localeCompare(a.created_at || '');
+      const ca = (b.created_at || '').localeCompare(a.created_at || '');
+      if (ca !== 0) return ca;
+      return (b.period_end || '').localeCompare(a.period_end || '');
     });
 }
 
