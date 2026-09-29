@@ -195,66 +195,108 @@ function renderHome(topics) {
     return;
   }
 
-  const grid = document.createElement('div');
-  grid.className = 'topic-grid';
+  const list = document.createElement('div');
+  list.className = 'topic-list';
+  list.setAttribute('role', 'table');
+  list.setAttribute('aria-label', 'Topics');
+
+  const header = document.createElement('div');
+  header.className = 'topic-list-row topic-list-head';
+  header.setAttribute('role', 'row');
+  header.innerHTML = `
+    <div role="columnheader">Topic</div>
+    <div role="columnheader">Owner</div>
+    <div role="columnheader">Cadence</div>
+    <div role="columnheader">RAG</div>
+    <div role="columnheader">Trend</div>
+    <div role="columnheader">Last period</div>
+    <div role="columnheader"><span class="sr-only">Actions</span></div>
+  `;
+  list.appendChild(header);
 
   for (const t of active) {
     const latest = t.latest_report;
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'topic-card';
-    card.addEventListener('click', () => showTopic(t.id));
-
     const period = latest
       ? `${formatDate(latest.period_start)} – ${formatDate(latest.period_end)}`
       : 'No updates yet';
+    const summary = latest && latest.exec_summary
+      ? String(latest.exec_summary).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+      : '';
+    const snippet = summary.length > 120 ? summary.slice(0, 117) + '…' : summary;
 
-    card.innerHTML = `
-      <div class="topic-card-top">
-        <h2>${escapeHtml(t.name)}</h2>
-        ${ragChip(latest && latest.rag)}
+    const row = document.createElement('div');
+    row.className = 'topic-list-row';
+    row.setAttribute('role', 'row');
+    row.tabIndex = 0;
+    const open = () => showTopic(t.id);
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      open();
+    });
+    row.addEventListener('keydown', (e) => {
+      if (e.target.closest('button')) return;
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+
+    row.innerHTML = `
+      <div class="topic-list-topic" role="cell">
+        <div class="topic-list-name">${escapeHtml(t.name)}</div>
+        ${snippet ? `<div class="topic-list-snippet">${escapeHtml(snippet)}</div>` : ''}
       </div>
-      <div class="topic-meta">
-        ${cadenceChip(t.cadence)}
-        ${latest ? trendChip(latest.trend) : ''}
-        ${t.owner ? `<span class="topic-owner">${escapeHtml(t.owner)}</span>` : ''}
+      <div class="topic-list-owner" role="cell">${t.owner ? escapeHtml(t.owner) : '—'}</div>
+      <div role="cell">${cadenceChip(t.cadence)}</div>
+      <div role="cell">${ragChip(latest && latest.rag)}</div>
+      <div role="cell">${latest ? trendChip(latest.trend) : '<span class="chip chip-muted">—</span>'}</div>
+      <div class="topic-list-period" role="cell">${escapeHtml(period)}</div>
+      <div class="topic-list-actions" role="cell">
+        <button type="button" class="btn btn-primary btn-sm" data-update>Update</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-edit>Edit</button>
       </div>
-      <div class="topic-period">${escapeHtml(period)}</div>
     `;
-    grid.appendChild(card);
+    row.querySelector('[data-update]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      open();
+    });
+    row.querySelector('[data-edit]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      openTopicModal(t);
+    });
+    list.appendChild(row);
   }
 
-  app.appendChild(grid);
+  app.appendChild(list);
 }
 
-function openNewTopicModal() {
+function openTopicModal(existing = null) {
+  const editing = Boolean(existing);
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
   backdrop.setAttribute('role', 'dialog');
   backdrop.setAttribute('aria-modal', 'true');
 
+  const cadence = (existing && existing.cadence) || 'weekly';
   backdrop.innerHTML = `
     <div class="modal">
-      <h2>New topic</h2>
+      <h2>${editing ? 'Edit topic' : 'New topic'}</h2>
       <div class="field">
-        <label for="new-name">Name</label>
-        <input id="new-name" type="text" autocomplete="off" required />
+        <label for="topic-name">Name</label>
+        <input id="topic-name" type="text" autocomplete="off" required value="${escapeHtml((existing && existing.name) || '')}" />
       </div>
       <div class="field">
-        <label for="new-cadence">Cadence</label>
-        <select id="new-cadence">
-          <option value="weekly">Weekly</option>
-          <option value="fortnightly">Fortnightly</option>
-          <option value="monthly">Monthly</option>
+        <label for="topic-cadence">Cadence</label>
+        <select id="topic-cadence">
+          <option value="weekly"${cadence === 'weekly' ? ' selected' : ''}>Weekly</option>
+          <option value="fortnightly"${cadence === 'fortnightly' ? ' selected' : ''}>Fortnightly</option>
+          <option value="monthly"${cadence === 'monthly' ? ' selected' : ''}>Monthly</option>
         </select>
       </div>
       <div class="field">
-        <label for="new-owner">Owner</label>
-        <input id="new-owner" type="text" autocomplete="off" />
+        <label for="topic-owner">Owner</label>
+        <input id="topic-owner" type="text" autocomplete="off" value="${escapeHtml((existing && existing.owner) || '')}" />
       </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" data-cancel>Cancel</button>
-        <button type="button" class="btn btn-primary" data-save>Create</button>
+        <button type="button" class="btn btn-primary" data-save>${editing ? 'Save' : 'Create'}</button>
       </div>
     </div>
   `;
@@ -265,28 +307,42 @@ function openNewTopicModal() {
   backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 
   backdrop.querySelector('[data-save]').addEventListener('click', async () => {
-    const name = backdrop.querySelector('#new-name').value.trim();
-    const cadence = backdrop.querySelector('#new-cadence').value;
-    const owner = backdrop.querySelector('#new-owner').value.trim();
+    const name = backdrop.querySelector('#topic-name').value.trim();
+    const cadenceVal = backdrop.querySelector('#topic-cadence').value;
+    const owner = backdrop.querySelector('#topic-owner').value.trim();
     if (!name) {
       toast('Name is required', 'error');
       return;
     }
     try {
-      await api('/api/topics', {
-        method: 'POST',
-        body: JSON.stringify({ name, cadence, owner })
-      });
-      toast('Topic created');
-      close();
-      showHome();
+      if (editing) {
+        await api('/api/topics/' + encodeURIComponent(existing.id), {
+          method: 'PATCH',
+          body: JSON.stringify({ name, cadence: cadenceVal, owner })
+        });
+        toast('Topic updated');
+        close();
+        showTopic(existing.id);
+      } else {
+        await api('/api/topics', {
+          method: 'POST',
+          body: JSON.stringify({ name, cadence: cadenceVal, owner })
+        });
+        toast('Topic created');
+        close();
+        showHome();
+      }
     } catch (err) {
       toast(err.message, 'error');
     }
   });
 
   document.body.appendChild(backdrop);
-  backdrop.querySelector('#new-name').focus();
+  backdrop.querySelector('#topic-name').focus();
+}
+
+function openNewTopicModal() {
+  openTopicModal(null);
 }
 
 async function showTopic(topicId) {
@@ -384,6 +440,12 @@ function renderTopicUpdate(topic, previous) {
       </p>
     </div>
   `;
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.className = 'btn btn-ghost';
+  editBtn.textContent = 'Edit topic';
+  editBtn.addEventListener('click', () => openTopicModal(topic));
+  head.appendChild(editBtn);
   app.appendChild(head);
 
   const layout = document.createElement('div');
