@@ -1,0 +1,6 @@
+id,name,cadence,owner,active,sort_order,created_at,updated_at
+7fc54606-2f7c-4719-b69b-ad208d9e32b6,Delivery,weekly,A. Chen,true,1,2026-09-15T21:28:17.404Z,2026-09-29T21:29:29.037Z
+9a9ff252-7e39-44ce-b5f3-d66e78ce00bc,Risk & Controls,fortnightly,B. Okonkwo,true,2,2026-09-15T21:28:17.404Z,2026-09-22T21:28:17.404Z
+2b6c7405-8829-4829-819d-03af96b92d62,Stakeholder,weekly,C. Patel,true,3,2026-09-15T21:28:17.404Z,2026-09-22T21:28:17.404Z
+e33ab066-641f-4c09-a1db-c6eb9919dc42,Resourcing,monthly,D. Müller,true,4,2026-09-15T21:28:17.404Z,2026-09-22T21:28:17.404Z
+814747bb-8ca6-4541-b7d6-9e16ed5e3c93,Tech,fortnightly,E. Santos,true,5,2026-09-15T21:28:17.404Z,2026-09-22T21:28:17.404Z

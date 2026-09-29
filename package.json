@@ -1,0 +1,13 @@
+{
+  "name": "reporter",
+  "version": "1.0.0",
+  "description": "UBS TISO-style programme reporting — topics and RAG status updates",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true
+}
