@@ -1766,15 +1766,38 @@ select {
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem 1.25rem;
-  margin-bottom: 0.9rem;
-  padding-bottom: 0.8rem;
-  border-bottom: 1px solid var(--border);
+  margin: -1.35rem -1.4rem 1.1rem;
+  padding: 1rem 1.4rem 1.05rem;
+  background: #2b2d2c;
+  color: #ffffff;
+  border-bottom: 4px solid var(--brand);
+  border-radius: var(--radius) var(--radius) 0 0;
+  align-items: center;
 }
+.weekly-section-head .weekly-topic-title { color: #ffffff; }
+.weekly-section-head .weekly-report-eyebrow,
+.weekly-section-head .weekly-topic-meta,
+.weekly-section-head .weekly-description,
+.weekly-section-head .weekly-sep,
+.weekly-section-head .cadence-text { color: rgba(255, 255, 255, 0.72); }
+.weekly-section-head .weekly-topic-png {
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.weekly-section-head .weekly-topic-png:hover { background: rgba(255, 255, 255, 0.14); }
 .weekly-section-identity { min-width: 0; flex: 1 1 14rem; }
 .weekly-section-status { flex-shrink: 0; }
+.weekly-report-eyebrow {
+  margin: 0 0 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
 .weekly-topic-title {
   margin: 0;
-  font-size: 1.2rem;
+  font-size: 2.2rem;
   font-weight: 700;
   letter-spacing: -0.015em;
   line-height: 1.25;
@@ -2004,3 +2027,6 @@ select {
 .ov-row .status-unit, .ov-row .rag-chip { grid-column: 2; grid-row: 1 / span 2; }
 .ov-empty { margin: 0; padding: 0.4rem 0 0.9rem; color: var(--text-muted); font-size: 0.9rem; }
 @media (max-width: 1000px) { .ov-grid { grid-template-columns: 1fr; } }
+
+.weekly-section-head .trend-unit { color: #ffffff; }
+.weekly-section-head h2.weekly-topic-title { font-size: 2.2rem; line-height: 1.15; margin: 0; }

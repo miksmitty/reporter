@@ -365,15 +365,6 @@ function renderOverview(topics) {
   const hero = document.createElement('div');
   hero.className = 'ov-hero';
   hero.innerHTML = `<div><h1>${greet}</h1><p>${escapeHtml(nowLabel)} · Week ending ${escapeHtml(formatDate(ending))}</p></div>`;
-  const heroActions = document.createElement('div');
-  heroActions.className = 'page-head-actions';
-  const packBtn = document.createElement('button');
-  packBtn.type = 'button';
-  packBtn.className = 'btn btn-primary';
-  packBtn.textContent = 'Open this week’s pack';
-  packBtn.addEventListener('click', () => showWeekly(ending));
-  heroActions.appendChild(packBtn);
-  hero.appendChild(heroActions);
   app.appendChild(hero);
 
   const tiles = document.createElement('div');
@@ -432,7 +423,7 @@ function renderOverview(topics) {
   const grid = document.createElement('div');
   grid.className = 'ov-grid';
 
-  const attCard = card('Needs attention', `${attention.length} Red / Amber`);
+  const attCard = card('Red / Amber topics', String(attention.length));
   fill(attCard, attention.map((t) => {
     const plan = plainTextSnippet(t.latest_report.gtg_plan || t.latest_report.exec_summary || '', 110);
     return topicRow(t, plan || `${t.owner || 'No owner'}`);
@@ -478,21 +469,6 @@ function renderHome(topics) {
       <p>Select a topic to enter the next status update.</p>
     </div>
   `;
-  const headActions = document.createElement('div');
-  headActions.className = 'page-head-actions';
-  const weeklyBtn = document.createElement('button');
-  weeklyBtn.type = 'button';
-  weeklyBtn.className = 'btn btn-ghost';
-  weeklyBtn.textContent = 'Weekly view';
-  weeklyBtn.addEventListener('click', () => showWeekly());
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'btn btn-primary';
-  addBtn.textContent = 'New topic';
-  addBtn.addEventListener('click', () => openNewTopicModal());
-  headActions.appendChild(weeklyBtn);
-  headActions.appendChild(addBtn);
-  head.appendChild(headActions);
   app.appendChild(head);
 
   if (!active.length) {
@@ -1379,15 +1355,6 @@ function renderReportPanel(title, reports, emptyMsg, cadence, copyHooks) {
 function renderTopicUpdate(topic, previous, history) {
   app.innerHTML = '';
 
-  const back = document.createElement('div');
-  back.className = 'back-row';
-  const backBtn = document.createElement('button');
-  backBtn.type = 'button';
-  backBtn.className = 'btn btn-ghost btn-sm';
-  backBtn.textContent = '← All topics';
-  backBtn.addEventListener('click', () => showHome());
-  back.appendChild(backBtn);
-  app.appendChild(back);
 
   const head = document.createElement('div');
   head.className = 'page-head';
@@ -1893,18 +1860,6 @@ async function showWeekly(initialEnding) {
     }
     app.innerHTML = '';
 
-    const back = document.createElement('div');
-    back.className = 'back-row no-print';
-    const backBtn = document.createElement('button');
-    backBtn.type = 'button';
-    backBtn.className = 'btn btn-ghost btn-sm';
-    backBtn.textContent = '← All topics';
-    backBtn.addEventListener('click', () => {
-      if (typeof history !== 'undefined') history.replaceState(null, '', location.pathname + location.search);
-      showHome();
-    });
-    back.appendChild(backBtn);
-    app.appendChild(back);
 
     const head = document.createElement('div');
     head.className = 'page-head weekly-head';
@@ -1981,10 +1936,10 @@ async function showWeekly(initialEnding) {
 
     const attention = document.createElement('div');
     attention.className = 'weekly-attention';
-    attention.setAttribute('aria-label', 'Needs attention');
+    attention.setAttribute('aria-label', 'Red and Amber topics');
     const attentionTitle = document.createElement('div');
     attentionTitle.className = 'weekly-attention-title';
-    attentionTitle.textContent = 'Needs attention';
+    attentionTitle.textContent = 'Red / Amber topics';
     attention.appendChild(attentionTitle);
 
     const attentionCandidates = items
@@ -2152,13 +2107,13 @@ async function showWeekly(initialEnding) {
       metaBits.push(topic.owner ? escapeHtml(topic.owner) : '<span class="report-empty">No owner</span>');
       if (topic.business_unit) metaBits.push(escapeHtml(topic.business_unit));
       if (topic.cadence) metaBits.push('<span class="cadence-text">' + escapeHtml(topic.cadence) + '</span>');
-      metaBits.push('<span class="topic-period">' + escapeHtml(periodLabel) + '</span>');
 
       const headEl = document.createElement('header');
       headEl.className = 'weekly-section-head';
       const identity = document.createElement('div');
       identity.className = 'weekly-section-identity';
       identity.innerHTML =
+        '<p class="weekly-report-eyebrow">Key Topics Reporting<span class="weekly-sep"> · </span>' + escapeHtml(periodLabel) + '</p>' +
         '<h2 class="weekly-topic-title">' + escapeHtml(topic.name || 'Untitled') + '</h2>' +
         '<p class="weekly-topic-meta">' + metaBits.join('<span class="weekly-sep"> · </span>') + '</p>';
       if (topic.description) {
