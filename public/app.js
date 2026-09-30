@@ -26,7 +26,6 @@ document.querySelectorAll('.nav-item').forEach((a) => {
     const n = a.dataset.nav;
     if (n === 'overview') showOverview();
     else if (n === 'topics') showHome();
-    else if (n === 'keydates') showKeyDates();
     else showWeekly();
     window.scrollTo(0, 0);
   });
@@ -1484,6 +1483,7 @@ function renderTopicUpdate(topic, previous, history) {
     )
   );
   app.appendChild(layout);
+  app.appendChild(createKeyDatesPanel(topic));
 }
 
 
@@ -2168,152 +2168,102 @@ async function showWeekly(initialEnding) {
 
 
 
-/* ── Key dates page ───────────────────────────────────────────────────────── */
+/* ── Key dates panel (on each topic's page, edited by that topic's owner) ─ */
 
-let keyDatesTopicFilter = '';
-
-async function showKeyDates() {
-  setNav('keydates');
-  setHash('#keydates');
-  app.innerHTML = '<div class="loading">Loading key dates…</div>';
-  try {
-    const topics = (await api('/api/topics')).filter((t) => t.active !== false);
-    topics.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || (a.name || '').localeCompare(b.name || ''));
-    const lists = await Promise.all(topics.map((t) => api('/api/topics/' + encodeURIComponent(t.id) + '/key-dates')));
-    renderKeyDates(topics, lists);
-  } catch (err) {
-    app.innerHTML = `<div class="empty-state">Failed to load key dates: ${escapeHtml(err.message)}</div>`;
-  }
-}
-
-function renderKeyDates(topics, lists) {
-  app.innerHTML = '';
-  const head = document.createElement('div');
-  head.className = 'page-head';
-  head.innerHTML = `
-    <div>
-      <h1>Key dates</h1>
-      <p>Shown as short text in each topic's 8-week grid on the weekly pack. Changes save as you make them.</p>
-    </div>
-    <div class="page-head-actions">
-      <div class="field">
-        <label class="sr-only" for="kd-filter">Topic</label>
-        <select id="kd-filter">
-          <option value="">All topics</option>
-          ${topics.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('')}
-        </select>
-      </div>
-    </div>`;
-  app.appendChild(head);
-  const filter = head.querySelector('#kd-filter');
-  filter.value = topics.some((t) => t.id === keyDatesTopicFilter) ? keyDatesTopicFilter : '';
-  keyDatesTopicFilter = filter.value;
-  filter.addEventListener('change', () => {
-    keyDatesTopicFilter = filter.value;
-    for (const c of body.children) c.hidden = Boolean(filter.value) && c.dataset.topic !== filter.value;
-  });
-
-  const body = document.createElement('div');
-  body.className = 'kd-page';
-  app.appendChild(body);
+function createKeyDatesPanel(topic) {
   const today = new Date().toISOString().slice(0, 10);
+  const base = 'api/topics/' + encodeURIComponent(topic.id) + '/key-dates';
+  let rows = [];
 
-  topics.forEach((topic, i) => {
-    const rows = lists[i].slice();
-    const card = document.createElement('section');
-    card.className = 'kd-card';
-    card.dataset.topic = topic.id;
-    card.hidden = Boolean(keyDatesTopicFilter) && topic.id !== keyDatesTopicFilter;
-    card.innerHTML = `
-      <div class="kd-card-head">
-        <h2>${escapeHtml(topic.name)}</h2>
-        <span class="kd-count"></span>
-      </div>
-      <div class="kd-rows"></div>
-      <div class="kd-add">
-        <input type="date" class="kd-new-date" aria-label="New key date" />
-        <input type="text" class="kd-new-desc" maxlength="120" placeholder="Short description" aria-label="New key date description" />
-        <button type="button" class="btn btn-primary btn-sm kd-add-btn">Add</button>
-      </div>`;
-    const rowsEl = card.querySelector('.kd-rows');
-    const count = card.querySelector('.kd-count');
-    const base = 'api/topics/' + encodeURIComponent(topic.id) + '/key-dates';
+  const card = document.createElement('section');
+  card.className = 'panel kd-card';
+  card.setAttribute('aria-label', 'Key dates');
+  card.innerHTML = `
+    <div class="kd-card-head">
+      <h2><span class="panel-label">Key dates</span></h2>
+      <span class="kd-count"></span>
+    </div>
+    <p class="field-hint">Shown as short text in this topic's 8-week grid on the weekly pack. Changes save as you make them.</p>
+    <div class="kd-rows"><div class="key-dates-empty">Loading…</div></div>
+    <div class="kd-add">
+      <input type="date" class="kd-new-date" aria-label="New key date" />
+      <input type="text" class="kd-new-desc" maxlength="120" placeholder="Short description" aria-label="New key date description" />
+      <button type="button" class="btn btn-primary btn-sm kd-add-btn">Add</button>
+    </div>`;
+  const rowsEl = card.querySelector('.kd-rows');
+  const count = card.querySelector('.kd-count');
 
-    function paint() {
-      rows.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-      count.textContent = rows.length ? `${rows.length} key date${rows.length === 1 ? '' : 's'}` : '';
-      rowsEl.innerHTML = '';
-      if (!rows.length) {
-        rowsEl.innerHTML = '<div class="key-dates-empty">No key dates yet.</div>';
-        return;
-      }
-      for (const kd of rows) {
-        const row = document.createElement('div');
-        row.className = 'kd-row' + ((kd.date || '') < today ? ' kd-past' : '');
-        row.innerHTML =
-          '<input type="date" class="kd-edit-date" value="' + escapeHtml(kd.date || '') + '" aria-label="Date" />' +
-          '<input type="text" class="kd-edit-desc" maxlength="120" value="' + escapeHtml(kd.description || '') + '" aria-label="Description" />' +
-          '<button type="button" class="btn btn-ghost btn-sm kd-remove">Delete</button>';
-        const dateIn = row.querySelector('.kd-edit-date');
-        const descIn = row.querySelector('.kd-edit-desc');
-        async function save() {
-          const date = dateIn.value;
-          const description = descIn.value.trim();
-          if (date === kd.date && description === kd.description) return;
-          if (!date || !description) {
-            toast('A key date needs a date and a description', 'error');
-            dateIn.value = kd.date; descIn.value = kd.description;
-            return;
-          }
-          try {
-            const updated = await api(base + '/' + encodeURIComponent(kd.id), {
-              method: 'PATCH', body: JSON.stringify({ date, description })
-            });
-            Object.assign(kd, updated);
-            toast('Key date saved');
-            paint();
-          } catch (err) { toast(err.message, 'error'); }
+  function paint() {
+    rows.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    count.textContent = rows.length ? `${rows.length} key date${rows.length === 1 ? '' : 's'}` : '';
+    rowsEl.innerHTML = '';
+    if (!rows.length) {
+      rowsEl.innerHTML = '<div class="key-dates-empty">No key dates yet.</div>';
+      return;
+    }
+    for (const kd of rows) {
+      const row = document.createElement('div');
+      row.className = 'kd-row' + ((kd.date || '') < today ? ' kd-past' : '');
+      row.innerHTML =
+        '<input type="date" class="kd-edit-date" value="' + escapeHtml(kd.date || '') + '" aria-label="Date" />' +
+        '<input type="text" class="kd-edit-desc" maxlength="120" value="' + escapeHtml(kd.description || '') + '" aria-label="Description" />' +
+        '<button type="button" class="btn btn-ghost btn-sm kd-remove">Delete</button>';
+      const dateIn = row.querySelector('.kd-edit-date');
+      const descIn = row.querySelector('.kd-edit-desc');
+      async function save() {
+        const date = dateIn.value;
+        const description = descIn.value.trim();
+        if (date === kd.date && description === kd.description) return;
+        if (!date || !description) {
+          toast('A key date needs a date and a description', 'error');
+          dateIn.value = kd.date; descIn.value = kd.description;
+          return;
         }
-        dateIn.addEventListener('change', save);
-        descIn.addEventListener('change', save);
-        descIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') descIn.blur(); });
-        row.querySelector('.kd-remove').addEventListener('click', async () => {
-          try {
-            await api(base + '/' + encodeURIComponent(kd.id), { method: 'DELETE' });
-            rows.splice(rows.indexOf(kd), 1);
-            toast('Key date deleted');
-            paint();
-          } catch (err) { toast(err.message, 'error'); }
-        });
-        rowsEl.appendChild(row);
+        try {
+          Object.assign(kd, await api(base + '/' + encodeURIComponent(kd.id), {
+            method: 'PATCH', body: JSON.stringify({ date, description })
+          }));
+          toast('Key date saved');
+          paint();
+        } catch (err) { toast(err.message, 'error'); }
       }
+      dateIn.addEventListener('change', save);
+      descIn.addEventListener('change', save);
+      descIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') descIn.blur(); });
+      row.querySelector('.kd-remove').addEventListener('click', async () => {
+        try {
+          await api(base + '/' + encodeURIComponent(kd.id), { method: 'DELETE' });
+          rows.splice(rows.indexOf(kd), 1);
+          toast('Key date deleted');
+          paint();
+        } catch (err) { toast(err.message, 'error'); }
+      });
+      rowsEl.appendChild(row);
     }
+  }
 
-    const newDate = card.querySelector('.kd-new-date');
-    const newDesc = card.querySelector('.kd-new-desc');
-    async function add() {
-      const date = newDate.value;
-      const description = newDesc.value.trim();
-      if (!date) { toast('Pick a date', 'error'); newDate.focus(); return; }
-      if (!description) { toast('Add a short description', 'error'); newDesc.focus(); return; }
-      try {
-        rows.push(await api(base, { method: 'POST', body: JSON.stringify({ date, description }) }));
-        newDate.value = ''; newDesc.value = '';
-        toast('Key date added');
-        paint();
-        newDate.focus();
-      } catch (err) { toast(err.message, 'error'); }
-    }
-    card.querySelector('.kd-add-btn').addEventListener('click', add);
-    newDesc.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
+  const newDate = card.querySelector('.kd-new-date');
+  const newDesc = card.querySelector('.kd-new-desc');
+  async function add() {
+    const date = newDate.value;
+    const description = newDesc.value.trim();
+    if (!date) { toast('Pick a date', 'error'); newDate.focus(); return; }
+    if (!description) { toast('Add a short description', 'error'); newDesc.focus(); return; }
+    try {
+      rows.push(await api(base, { method: 'POST', body: JSON.stringify({ date, description }) }));
+      newDate.value = ''; newDesc.value = '';
+      toast('Key date added');
+      paint();
+      newDate.focus();
+    } catch (err) { toast(err.message, 'error'); }
+  }
+  card.querySelector('.kd-add-btn').addEventListener('click', add);
+  newDesc.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
 
-    paint();
-    body.appendChild(card);
-  });
-
-  if (!topics.length) body.innerHTML = '<div class="empty-state">No active topics yet.</div>';
+  api(base).then((list) => { rows = Array.isArray(list) ? list : []; paint(); })
+    .catch((err) => { rowsEl.innerHTML = `<div class="key-dates-empty">Couldn't load key dates: ${escapeHtml(err.message)}</div>`; });
+  return card;
 }
-
 
 function route() {
   const h = location.hash;
@@ -2322,8 +2272,6 @@ function route() {
     showWeekly(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : undefined);
   } else if (h === '#topics') {
     showHome();
-  } else if (h === '#keydates') {
-    showKeyDates();
   } else {
     showOverview();
   }
