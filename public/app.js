@@ -26,6 +26,7 @@ document.querySelectorAll('.nav-item').forEach((a) => {
     const n = a.dataset.nav;
     if (n === 'overview') showOverview();
     else if (n === 'topics') showHome();
+    else if (n === 'keydates') showKeyDates();
     else showWeekly();
     window.scrollTo(0, 0);
   });
@@ -516,7 +517,7 @@ function renderHome(topics) {
     <div class="field">
       <label class="sr-only" for="topic-sort">Sort</label>
       <select id="topic-sort">
-        <option value="priority-asc" selected>Priority</option>
+        <option value="priority-asc" selected>Reporting order</option>
         <option value="name-asc">Name A–Z</option>
         <option value="name-desc">Name Z–A</option>
         <option value="rag-asc">RAG (worst first)</option>
@@ -819,22 +820,6 @@ async function openTopicModal(existing = null, opts = {}) {
   const editing = Boolean(existing);
   const afterSave = opts.afterSave || (editing ? 'topic' : 'home');
 
-  let workingKeyDates = [];
-  if (editing && existing && existing.id) {
-    try {
-      workingKeyDates = await api('/api/topics/' + encodeURIComponent(existing.id) + '/key-dates');
-    } catch {
-      workingKeyDates = Array.isArray(existing.key_dates) ? existing.key_dates.slice() : [];
-    }
-  }
-  // Local staging: { id?, date, description, _local?, _deleted? }
-  workingKeyDates = workingKeyDates.map((k) => ({
-    id: k.id,
-    date: k.date,
-    description: k.description,
-    _local: false
-  }));
-
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
   backdrop.setAttribute('role', 'dialog');
@@ -875,19 +860,9 @@ async function openTopicModal(existing = null, opts = {}) {
           </select>
         </div>
         <div class="field">
-          <label for="topic-priority">Priority</label>
+          <label for="topic-priority">Reporting order</label>
           <input id="topic-priority" type="number" min="1" step="1" placeholder="e.g. 1" value="${priorityVal === '' || Number.isNaN(priorityVal) ? '' : escapeHtml(String(priorityVal))}" />
-          <p class="field-hint">Lower number appears first in the list and weekly pack.</p>
-        </div>
-      </div>
-      <div class="field key-dates-field">
-        <label>Key dates</label>
-        <p class="field-hint">Shown as short text in the weekly 8-week grid.</p>
-        <div class="key-dates-editor" id="key-dates-editor"></div>
-        <div class="key-dates-add">
-          <input id="kd-date" type="date" aria-label="Key date" />
-          <input id="kd-desc" type="text" maxlength="120" placeholder="Short description" aria-label="Key date description" />
-          <button type="button" class="btn btn-ghost btn-sm" id="kd-add">Add</button>
+          <p class="field-hint">Position in the weekly pack and topic list; 1 is reported first.</p>
         </div>
       </div>
       <div class="modal-actions">
@@ -902,87 +877,6 @@ async function openTopicModal(existing = null, opts = {}) {
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
   backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 
-  const editor = backdrop.querySelector('#key-dates-editor');
-  const removedIds = [];
-
-  function paintKeyDates() {
-    editor.innerHTML = '';
-    const active = workingKeyDates.filter((k) => !k._deleted);
-    if (!active.length) {
-      const empty = document.createElement('div');
-      empty.className = 'key-dates-empty';
-      empty.textContent = 'No key dates yet.';
-      editor.appendChild(empty);
-      return;
-    }
-    active.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-    for (const kd of active) {
-      const row = document.createElement('div');
-      row.className = 'key-dates-editor-row';
-      row.innerHTML =
-        '<input type="date" class="kd-edit-date" value="' + escapeHtml(kd.date || '') + '" aria-label="Date" />' +
-        '<input type="text" class="kd-edit-desc" maxlength="120" value="' + escapeHtml(kd.description || '') + '" aria-label="Description" />' +
-        '<button type="button" class="btn btn-ghost btn-sm kd-remove" title="Remove">Remove</button>';
-      const dateInput = row.querySelector('.kd-edit-date');
-      const descInput = row.querySelector('.kd-edit-desc');
-      dateInput.addEventListener('change', () => { kd.date = dateInput.value; });
-      descInput.addEventListener('input', () => { kd.description = descInput.value; });
-      row.querySelector('.kd-remove').addEventListener('click', () => {
-        if (kd.id && !kd._local) removedIds.push(kd.id);
-        kd._deleted = true;
-        paintKeyDates();
-      });
-      editor.appendChild(row);
-    }
-  }
-  paintKeyDates();
-
-  backdrop.querySelector('#kd-add').addEventListener('click', () => {
-    const date = backdrop.querySelector('#kd-date').value;
-    const description = backdrop.querySelector('#kd-desc').value.trim();
-    if (!date) {
-      toast('Pick a date', 'error');
-      return;
-    }
-    if (!description) {
-      toast('Add a short description', 'error');
-      return;
-    }
-    workingKeyDates.push({
-      id: 'local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
-      date,
-      description,
-      _local: true
-    });
-    backdrop.querySelector('#kd-date').value = '';
-    backdrop.querySelector('#kd-desc').value = '';
-    paintKeyDates();
-  });
-
-  async function syncKeyDates(topicId) {
-    const base = 'api/topics/' + encodeURIComponent(topicId) + '/key-dates';
-    for (const id of removedIds) {
-      await api(base + '/' + encodeURIComponent(id), { method: 'DELETE' });
-    }
-    const active = workingKeyDates.filter((k) => !k._deleted);
-    for (const kd of active) {
-      const date = (kd.date || '').trim();
-      const description = (kd.description || '').trim();
-      if (!date || !description) continue;
-      if (kd._local || !kd.id || String(kd.id).startsWith('local-')) {
-        await api(base, {
-          method: 'POST',
-          body: JSON.stringify({ date, description })
-        });
-      } else {
-        await api(base + '/' + encodeURIComponent(kd.id), {
-          method: 'PATCH',
-          body: JSON.stringify({ date, description })
-        });
-      }
-    }
-  }
-
   backdrop.querySelector('[data-save]').addEventListener('click', async () => {
     const name = backdrop.querySelector('#topic-name').value.trim();
     const description = backdrop.querySelector('#topic-description').value.trim();
@@ -994,16 +888,11 @@ async function openTopicModal(existing = null, opts = {}) {
       toast('Title is required', 'error');
       return;
     }
-    const incomplete = workingKeyDates.some((k) => !k._deleted && (!(k.date || '').trim() || !(k.description || '').trim()));
-    if (incomplete) {
-      toast('Each key date needs a date and description', 'error');
-      return;
-    }
     const payload = { name, description, cadence: cadenceVal, owner, business_unit };
     if (priorityRaw !== '') {
       const n = Number(priorityRaw);
       if (!Number.isFinite(n) || n < 1) {
-        toast('Priority must be a number ≥ 1', 'error');
+        toast('Reporting order must be a number ≥ 1', 'error');
         return;
       }
       payload.sort_order = Math.round(n);
@@ -1014,7 +903,6 @@ async function openTopicModal(existing = null, opts = {}) {
           method: 'PATCH',
           body: JSON.stringify(payload)
         });
-        await syncKeyDates(existing.id);
         toast('Topic updated');
         close();
         if (afterSave === 'home') showHome();
@@ -1024,7 +912,6 @@ async function openTopicModal(existing = null, opts = {}) {
           method: 'POST',
           body: JSON.stringify(payload)
         });
-        if (created && created.id) await syncKeyDates(created.id);
         toast('Topic created');
         close();
         showHome();
@@ -1960,7 +1847,7 @@ async function showWeekly(initialEnding) {
         const raN = ra == null ? 9 : ra;
         const rbN = rb == null ? 9 : rb;
         if (raN !== rbN) return raN - rbN;
-        /* items already priority / sort_order — preserve that within same RAG */
+        /* items already in reporting order / sort_order — preserve that within same RAG */
         return 0;
       })
       .slice(0, 3);
@@ -2055,7 +1942,7 @@ async function showWeekly(initialEnding) {
       return;
     }
 
-    /* Win D — topic jump rail (priority / sort_order — same as cards) */
+    /* Win D — topic jump rail (reporting order / sort_order — same as cards) */
     const rail = document.createElement('nav');
     rail.className = 'jump-rail';
     rail.setAttribute('data-png-skip', '');
@@ -2281,6 +2168,153 @@ async function showWeekly(initialEnding) {
 
 
 
+/* ── Key dates page ───────────────────────────────────────────────────────── */
+
+let keyDatesTopicFilter = '';
+
+async function showKeyDates() {
+  setNav('keydates');
+  setHash('#keydates');
+  app.innerHTML = '<div class="loading">Loading key dates…</div>';
+  try {
+    const topics = (await api('/api/topics')).filter((t) => t.active !== false);
+    topics.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || (a.name || '').localeCompare(b.name || ''));
+    const lists = await Promise.all(topics.map((t) => api('/api/topics/' + encodeURIComponent(t.id) + '/key-dates')));
+    renderKeyDates(topics, lists);
+  } catch (err) {
+    app.innerHTML = `<div class="empty-state">Failed to load key dates: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderKeyDates(topics, lists) {
+  app.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'page-head';
+  head.innerHTML = `
+    <div>
+      <h1>Key dates</h1>
+      <p>Shown as short text in each topic's 8-week grid on the weekly pack. Changes save as you make them.</p>
+    </div>
+    <div class="page-head-actions">
+      <div class="field">
+        <label class="sr-only" for="kd-filter">Topic</label>
+        <select id="kd-filter">
+          <option value="">All topics</option>
+          ${topics.map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
+  app.appendChild(head);
+  const filter = head.querySelector('#kd-filter');
+  filter.value = topics.some((t) => t.id === keyDatesTopicFilter) ? keyDatesTopicFilter : '';
+  keyDatesTopicFilter = filter.value;
+  filter.addEventListener('change', () => {
+    keyDatesTopicFilter = filter.value;
+    for (const c of body.children) c.hidden = Boolean(filter.value) && c.dataset.topic !== filter.value;
+  });
+
+  const body = document.createElement('div');
+  body.className = 'kd-page';
+  app.appendChild(body);
+  const today = new Date().toISOString().slice(0, 10);
+
+  topics.forEach((topic, i) => {
+    const rows = lists[i].slice();
+    const card = document.createElement('section');
+    card.className = 'kd-card';
+    card.dataset.topic = topic.id;
+    card.hidden = Boolean(keyDatesTopicFilter) && topic.id !== keyDatesTopicFilter;
+    card.innerHTML = `
+      <div class="kd-card-head">
+        <h2>${escapeHtml(topic.name)}</h2>
+        <span class="kd-count"></span>
+      </div>
+      <div class="kd-rows"></div>
+      <div class="kd-add">
+        <input type="date" class="kd-new-date" aria-label="New key date" />
+        <input type="text" class="kd-new-desc" maxlength="120" placeholder="Short description" aria-label="New key date description" />
+        <button type="button" class="btn btn-primary btn-sm kd-add-btn">Add</button>
+      </div>`;
+    const rowsEl = card.querySelector('.kd-rows');
+    const count = card.querySelector('.kd-count');
+    const base = 'api/topics/' + encodeURIComponent(topic.id) + '/key-dates';
+
+    function paint() {
+      rows.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+      count.textContent = rows.length ? `${rows.length} key date${rows.length === 1 ? '' : 's'}` : '';
+      rowsEl.innerHTML = '';
+      if (!rows.length) {
+        rowsEl.innerHTML = '<div class="key-dates-empty">No key dates yet.</div>';
+        return;
+      }
+      for (const kd of rows) {
+        const row = document.createElement('div');
+        row.className = 'kd-row' + ((kd.date || '') < today ? ' kd-past' : '');
+        row.innerHTML =
+          '<input type="date" class="kd-edit-date" value="' + escapeHtml(kd.date || '') + '" aria-label="Date" />' +
+          '<input type="text" class="kd-edit-desc" maxlength="120" value="' + escapeHtml(kd.description || '') + '" aria-label="Description" />' +
+          '<button type="button" class="btn btn-ghost btn-sm kd-remove">Delete</button>';
+        const dateIn = row.querySelector('.kd-edit-date');
+        const descIn = row.querySelector('.kd-edit-desc');
+        async function save() {
+          const date = dateIn.value;
+          const description = descIn.value.trim();
+          if (date === kd.date && description === kd.description) return;
+          if (!date || !description) {
+            toast('A key date needs a date and a description', 'error');
+            dateIn.value = kd.date; descIn.value = kd.description;
+            return;
+          }
+          try {
+            const updated = await api(base + '/' + encodeURIComponent(kd.id), {
+              method: 'PATCH', body: JSON.stringify({ date, description })
+            });
+            Object.assign(kd, updated);
+            toast('Key date saved');
+            paint();
+          } catch (err) { toast(err.message, 'error'); }
+        }
+        dateIn.addEventListener('change', save);
+        descIn.addEventListener('change', save);
+        descIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') descIn.blur(); });
+        row.querySelector('.kd-remove').addEventListener('click', async () => {
+          try {
+            await api(base + '/' + encodeURIComponent(kd.id), { method: 'DELETE' });
+            rows.splice(rows.indexOf(kd), 1);
+            toast('Key date deleted');
+            paint();
+          } catch (err) { toast(err.message, 'error'); }
+        });
+        rowsEl.appendChild(row);
+      }
+    }
+
+    const newDate = card.querySelector('.kd-new-date');
+    const newDesc = card.querySelector('.kd-new-desc');
+    async function add() {
+      const date = newDate.value;
+      const description = newDesc.value.trim();
+      if (!date) { toast('Pick a date', 'error'); newDate.focus(); return; }
+      if (!description) { toast('Add a short description', 'error'); newDesc.focus(); return; }
+      try {
+        rows.push(await api(base, { method: 'POST', body: JSON.stringify({ date, description }) }));
+        newDate.value = ''; newDesc.value = '';
+        toast('Key date added');
+        paint();
+        newDate.focus();
+      } catch (err) { toast(err.message, 'error'); }
+    }
+    card.querySelector('.kd-add-btn').addEventListener('click', add);
+    newDesc.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
+
+    paint();
+    body.appendChild(card);
+  });
+
+  if (!topics.length) body.innerHTML = '<div class="empty-state">No active topics yet.</div>';
+}
+
+
 function route() {
   const h = location.hash;
   if (h.startsWith('#weekly')) {
@@ -2288,6 +2322,8 @@ function route() {
     showWeekly(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : undefined);
   } else if (h === '#topics') {
     showHome();
+  } else if (h === '#keydates') {
+    showKeyDates();
   } else {
     showOverview();
   }
