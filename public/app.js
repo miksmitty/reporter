@@ -812,6 +812,7 @@ function renderKeyDatesGrid(weekFridays, currentEnding, keyDates) {
           span.className = 'kd-cell-text';
           span.textContent = full;
           span.title = tip;
+          td.classList.add('has-item');
           td.appendChild(span);
         }
         tr.appendChild(td);

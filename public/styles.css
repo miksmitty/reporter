@@ -1393,12 +1393,13 @@ select {
 
 .kd-cell {
   color: var(--text);
-  background: var(--bg-soft);
+  background: transparent;
 }
 .kd-cell.is-current-week {
-  background: rgba(var(--accent-rgb), 0.12);
   box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.28);
 }
+/* Past items: grey box. Current/upcoming items: no fill. */
+.kd-cell.is-past-week.has-item { background: var(--bg-hover); }
 .kd-cell.is-past-week { color: var(--text-muted); }
 .kd-cell.is-future-week { color: var(--text-muted); font-style: italic; }
 
