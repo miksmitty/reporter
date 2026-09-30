@@ -1687,8 +1687,8 @@ function buildFollowUps(item, weekEnding, onChange) {
   addBtn.type = 'button';
   addBtn.className = 'btn btn-sm followups-add';
   addBtn.setAttribute('data-png-skip', '');
-  addBtn.textContent = '+ Follow-up';
-  addBtn.title = 'Add a comment or question for the topic owner';
+  addBtn.textContent = '+ Comment';
+  addBtn.title = 'Add a comment for the topic owner';
   head.appendChild(title);
   head.appendChild(addBtn);
   wrap.appendChild(head);
@@ -1702,24 +1702,39 @@ function buildFollowUps(item, weekEnding, onChange) {
   form.setAttribute('data-png-skip', '');
   form.hidden = true;
   form.innerHTML =
-    '<div class="followups-form-row">' +
-      '<select class="followups-kind" aria-label="Type"><option value="question">Question</option><option value="comment">Comment</option></select>' +
-      '<input class="followups-author" type="text" maxlength="80" placeholder="Your name" aria-label="Your name" />' +
-    '</div>' +
-    '<textarea class="followups-body" rows="3" maxlength="2000" placeholder="Follow-up comment or question for the topic owner…" aria-label="Follow-up text"></textarea>' +
+    '<textarea class="followups-body" rows="3" maxlength="2000" placeholder="Add a comment…" aria-label="Comment"></textarea>' +
     '<div class="followups-form-actions">' +
+      '<span class="followups-as">' +
+        '<span class="followups-as-label">as <b class="followups-as-name"></b> <button type="button" class="followups-as-change">change</button></span>' +
+        '<input class="followups-author" type="text" maxlength="80" placeholder="Your name" aria-label="Your name" hidden />' +
+      '</span>' +
       '<button type="button" class="btn btn-ghost btn-sm followups-cancel">Cancel</button>' +
       '<button type="submit" class="btn btn-primary btn-sm">Post</button>' +
     '</div>';
   wrap.appendChild(form);
 
-  const kindSel = form.querySelector('.followups-kind');
+  const asLabel = form.querySelector('.followups-as-label');
+  const asName = form.querySelector('.followups-as-name');
   const authorIn = form.querySelector('.followups-author');
   const bodyIn = form.querySelector('.followups-body');
 
+  function showNameField(edit) {
+    authorIn.hidden = !edit;
+    asLabel.hidden = edit;
+    if (!edit) asName.textContent = authorIn.value.trim();
+  }
+  form.querySelector('.followups-as-change').addEventListener('click', () => { showNameField(true); authorIn.focus(); });
+  authorIn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); if (authorIn.value.trim()) { showNameField(false); bodyIn.focus(); } }
+  });
+  bodyIn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); form.requestSubmit(); }
+    if (e.key === 'Escape') closeForm();
+  });
+
   function render() {
     const open = item.comments.filter((c) => !c.resolved).length;
-    title.textContent = 'Management follow-up' +
+    title.textContent = 'Comments' +
       (item.comments.length ? ' · ' + item.comments.length + (open ? ' (' + open + ' open)' : ' (all resolved)') : '');
     wrap.classList.toggle('is-empty', !item.comments.length);
     if (item.comments.length) wrap.removeAttribute('data-png-skip'); else wrap.setAttribute('data-png-skip', '');
@@ -1729,9 +1744,7 @@ function buildFollowUps(item, weekEnding, onChange) {
       li.className = 'followup' + (c.resolved ? ' is-resolved' : '');
       const meta = document.createElement('div');
       meta.className = 'followup-meta';
-      const kindLabel = c.kind === 'question' ? 'Question' : 'Comment';
       meta.innerHTML =
-        '<span class="followup-kind followup-kind-' + escapeHtml(c.kind) + '">' + kindLabel + '</span>' +
         '<span class="followup-author">' + escapeHtml(c.author) + '</span>' +
         '<span class="followup-time">' + escapeHtml(formatStamp(c.created_at)) + '</span>' +
         (c.resolved ? '<span class="followup-resolved-tag">Resolved</span>' : '');
@@ -1757,7 +1770,7 @@ function buildFollowUps(item, weekEnding, onChange) {
       delBtn.className = 'btn btn-ghost btn-sm';
       delBtn.textContent = 'Delete';
       delBtn.addEventListener('click', async () => {
-        if (!window.confirm('Delete this ' + kindLabel.toLowerCase() + '?')) return;
+        if (!window.confirm('Delete this comment?')) return;
         try {
           await api('/api/comments/' + encodeURIComponent(c.id), { method: 'DELETE' });
           item.comments = item.comments.filter((x) => x.id !== c.id);
@@ -1781,6 +1794,7 @@ function buildFollowUps(item, weekEnding, onChange) {
     form.hidden = false;
     addBtn.hidden = true;
     authorIn.value = authorIn.value || getReviewerName();
+    showNameField(!authorIn.value);
     (authorIn.value ? bodyIn : authorIn).focus();
   }
   function closeForm() {
@@ -1794,21 +1808,21 @@ function buildFollowUps(item, weekEnding, onChange) {
     e.preventDefault();
     const author = authorIn.value.trim();
     const text = bodyIn.value.trim();
-    if (!author) { toast('Enter your name', 'error'); authorIn.focus(); return; }
-    if (!text) { toast('Enter your comment or question', 'error'); bodyIn.focus(); return; }
+    if (!text) { toast('Enter your comment', 'error'); bodyIn.focus(); return; }
+    if (!author) { showNameField(true); toast('Enter your name', 'error'); authorIn.focus(); return; }
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
     try {
       const row = await api('/api/topics/' + encodeURIComponent(topic.id) + '/comments', {
         method: 'POST',
-        body: JSON.stringify({ week_ending: weekEnding, kind: kindSel.value, author, body: text })
+        body: JSON.stringify({ week_ending: weekEnding, kind: 'comment', author, body: text })
       });
       row.resolved = row.resolved === true || row.resolved === 'true';
       item.comments.push(row);
       try { localStorage.setItem(REVIEWER_KEY, author); } catch (err) { /* storage blocked */ }
       closeForm();
       render();
-      toast('Follow-up posted');
+      toast('Comment posted');
     } catch (err) {
       toast(err.message, 'error');
     } finally {
@@ -2076,7 +2090,7 @@ async function showWeekly(initialEnding) {
       if (!el) return;
       const open = items.reduce((n, it) => n + (it.comments || []).filter((c) => !c.resolved).length, 0);
       el.hidden = !open;
-      el.innerHTML = '<b>' + open + '</b> open follow-up' + (open === 1 ? '' : 's');
+      el.innerHTML = '<b>' + open + '</b> open comment' + (open === 1 ? '' : 's');
     }
 
     const layout = document.createElement('div');

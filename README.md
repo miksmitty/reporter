@@ -47,7 +47,7 @@ GTG plan is required when RAG is not Green.
 - `POST /api/topics/:id/reports`
 
 - `GET /api/weekly?ending=YYYY-MM-DD` — weekly bundle (items include `comments`)
-- `POST /api/topics/:id/comments` — `{week_ending,kind,author,body}` management follow-up (`kind`: `comment` \| `question`)
+- `POST /api/topics/:id/comments` — `{week_ending,kind,author,body}` reviewer comment (`kind` defaults to `comment`)
 - `PATCH /api/comments/:id` — `{resolved}`; `DELETE /api/comments/:id`
 
 Static UI from `public/`.
