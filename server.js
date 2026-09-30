@@ -298,6 +298,11 @@ const MIME = {
   '.woff2': 'font/woff2'
 };
 
+function notFound(req, res) {
+  console.log(`404 ${req.method} ${req.url}`);
+  sendError(res, 404, `Not found: ${req.method} ${req.url}`);
+}
+
 function serveStatic(req, res, urlPath, searchParams) {
   let rel = urlPath === '/' ? '/index.html' : urlPath;
   try { rel = decodeURIComponent(rel.split('?')[0]); } catch { rel = '/index.html'; }
@@ -316,7 +321,7 @@ function serveStatic(req, res, urlPath, searchParams) {
   fs.readFile(filePath, (err0, data0) => {
     if (!err0) return respond(filePath, data0);
     fs.readFile(byName, (err, data) => {
-      if (err) return sendError(res, 404, 'Not found');
+      if (err) return notFound(req, res);
       respond(byName, data);
     });
   });
@@ -324,15 +329,7 @@ function serveStatic(req, res, urlPath, searchParams) {
     const ext = path.extname(filePath).toLowerCase();
     const base = path.basename(filePath).toLowerCase();
     const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
-    // HTML / index must never stick on a stale shell with old ?v= (Ana caveat)
-    if (ext === '.html' || base === 'index.html') {
-      headers['Cache-Control'] = 'no-cache, must-revalidate';
-    } else if (searchParams && searchParams.get('v')) {
-      // Fingerprinted assets (?v= bump on ship): long-lived / immutable
-      headers['Cache-Control'] = 'public, max-age=31536000, immutable';
-    } else {
-      headers['Cache-Control'] = 'no-cache';
-    }
+    headers['Cache-Control'] = 'no-cache';
     res.writeHead(200, headers);
     if (req.method === 'HEAD') {
       res.end();
@@ -458,7 +455,9 @@ function currentUser(req) {
 }
 
 async function handleApi(req, res, pathname, url) {
-  const method = req.method;
+  let method = req.method;
+  const override = String(req.headers['x-http-method-override'] || '').toUpperCase();
+  if (method === 'POST' && ['PATCH', 'DELETE', 'PUT'].includes(override)) method = override;
 
   if (pathname === '/api/me' && method === 'GET') {
     return sendJson(res, 200, { name: currentUser(req) });
@@ -751,7 +750,7 @@ async function handleApi(req, res, pathname, url) {
     return sendJson(res, 200, { ok: true });
   }
 
-  sendError(res, 404, 'Not found');
+  notFound(req, res);
 }
 
 // ── Server ──────────────────────────────────────────────────────────────────
@@ -770,6 +769,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' || req.method === 'HEAD') {
+      // A bare app path (e.g. /proxy/3080) must end in a slash, or the browser resolves the
+      // page's relative URLs one level too high. Redirect to the slash form.
+      if (pathname !== '/' && !pathname.endsWith('/') && !path.extname(pathname)) {
+        res.writeHead(301, { Location: pathname + '/' + url.search });
+        res.end();
+        return;
+      }
       serveStatic(req, res, pathname, url.searchParams);
       return;
     }

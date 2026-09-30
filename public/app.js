@@ -42,9 +42,14 @@ function toast(message, type = 'ok') {
 }
 
 async function api(path, options = {}) {
+  // Some corporate proxies only pass GET and POST, so PATCH/DELETE are sent as POST with an override header.
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  const method = (options.method || 'GET').toUpperCase();
+  if (method === 'PATCH' || method === 'DELETE' || method === 'PUT') headers['X-HTTP-Method-Override'] = method;
   const res = await fetch(String(path).replace(/^\//, ''), {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options
+    ...options,
+    method: headers['X-HTTP-Method-Override'] ? 'POST' : method,
+    headers
   });
   const text = await res.text();
   let data = null;
