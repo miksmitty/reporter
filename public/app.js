@@ -168,9 +168,9 @@ function trendChip(t) {
     Declining: { arrow: '↘', label: 'Declining', cls: 'trend-down' }
   };
   const m = map[t] || { arrow: '→', label: t, cls: 'trend-flat' };
-  return `<span class="trend-unit ${m.cls}" title="${escapeHtml(m.label)}" aria-label="${escapeHtml(m.label)}">` +
-    `<span class="trend-arrow">${m.arrow}</span>` +
-    `<span class="trend-label">${escapeHtml(m.label)}</span>` +
+  // Trend is an arrow only — never visible wording (label kept for screen readers).
+  return `<span class="trend-unit ${m.cls}" role="img" aria-label="${escapeHtml(m.label)}">` +
+    `<span class="trend-arrow" aria-hidden="true">${m.arrow}</span>` +
     `</span>`;
 }
 
@@ -215,6 +215,7 @@ function createChoiceControl({ id, label, options, value, groupClass }) {
     btn.dataset.value = opt.value;
     btn.setAttribute('role', 'radio');
     btn.innerHTML = opt.html != null ? opt.html : escapeHtml(opt.label);
+    if (opt.html != null) btn.setAttribute('aria-label', opt.label);
     btn.addEventListener('click', () => {
       if (hidden.value === opt.value) return;
       hidden.value = opt.value;
@@ -1319,11 +1320,11 @@ function renderTopicUpdate(topic, previous, history) {
     value: defaultTrend,
     options: [
       { value: 'Improving', label: 'Improving', chipClass: 'trend-choice trend-up',
-        html: '<span class="trend-arrow">↗</span><span class="trend-label">Improving</span>' },
+        html: '<span class="trend-arrow">↗</span>' },
       { value: 'Stable', label: 'Stable', chipClass: 'trend-choice trend-flat',
-        html: '<span class="trend-arrow">→</span><span class="trend-label">Stable</span>' },
+        html: '<span class="trend-arrow">→</span>' },
       { value: 'Declining', label: 'Declining', chipClass: 'trend-choice trend-down',
-        html: '<span class="trend-arrow">↘</span><span class="trend-label">Declining</span>' }
+        html: '<span class="trend-arrow">↘</span>' }
     ]
   });
   statusRow.appendChild(ragControl.field);
