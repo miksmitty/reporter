@@ -1463,6 +1463,198 @@ function renderTopicUpdate(topic, previous, history) {
 }
 
 
+/* ── PNG export helpers ─────────────────────────────────────────────────── */
+
+function dropRailColumn(clone) {
+  const layout = clone.querySelector('.weekly-layout');
+  if (!layout) return;
+  layout.style.gridTemplateColumns = 'minmax(0, 1fr)';
+  const pack = layout.querySelector('.weekly-pack');
+  if (pack) {
+    pack.style.width = 'auto';
+    Array.from(pack.children).forEach((c) => { c.style.width = 'auto'; });
+  }
+}
+
+async function exportPng(btn, getNode, name, onClone) {
+  const node = getNode();
+  if (!node || !window.ReporterPng) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Rendering…';
+  try {
+    await window.ReporterPng.download(node, name, onClone);
+  } catch (err) {
+    toast('PNG export failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+/* ── Management follow-up comments / questions ─────────────────────────── */
+
+const REVIEWER_KEY = 'reporter-reviewer-name';
+
+function getReviewerName() {
+  try { return localStorage.getItem(REVIEWER_KEY) || ''; } catch (e) { return ''; }
+}
+
+function formatStamp(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) +
+    ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+}
+
+/** Follow-up thread + composer for one topic in one reporting week. */
+function buildFollowUps(item, weekEnding, onChange) {
+  const topic = item.topic || {};
+  if (!Array.isArray(item.comments)) item.comments = [];
+  const wrap = document.createElement('div');
+  wrap.className = 'followups';
+
+  const head = document.createElement('div');
+  head.className = 'followups-head';
+  const title = document.createElement('div');
+  title.className = 'panel-label';
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'btn btn-sm followups-add';
+  addBtn.setAttribute('data-png-skip', '');
+  addBtn.textContent = '+ Follow-up';
+  addBtn.title = 'Add a comment or question for the topic owner';
+  head.appendChild(title);
+  head.appendChild(addBtn);
+  wrap.appendChild(head);
+
+  const list = document.createElement('ul');
+  list.className = 'followups-list';
+  wrap.appendChild(list);
+
+  const form = document.createElement('form');
+  form.className = 'followups-form';
+  form.setAttribute('data-png-skip', '');
+  form.hidden = true;
+  form.innerHTML =
+    '<div class="followups-form-row">' +
+      '<select class="followups-kind" aria-label="Type"><option value="question">Question</option><option value="comment">Comment</option></select>' +
+      '<input class="followups-author" type="text" maxlength="80" placeholder="Your name" aria-label="Your name" />' +
+    '</div>' +
+    '<textarea class="followups-body" rows="3" maxlength="2000" placeholder="Follow-up comment or question for the topic owner…" aria-label="Follow-up text"></textarea>' +
+    '<div class="followups-form-actions">' +
+      '<button type="button" class="btn btn-ghost btn-sm followups-cancel">Cancel</button>' +
+      '<button type="submit" class="btn btn-primary btn-sm">Post</button>' +
+    '</div>';
+  wrap.appendChild(form);
+
+  const kindSel = form.querySelector('.followups-kind');
+  const authorIn = form.querySelector('.followups-author');
+  const bodyIn = form.querySelector('.followups-body');
+
+  function render() {
+    const open = item.comments.filter((c) => !c.resolved).length;
+    title.textContent = 'Management follow-up' +
+      (item.comments.length ? ' · ' + item.comments.length + (open ? ' (' + open + ' open)' : ' (all resolved)') : '');
+    wrap.classList.toggle('is-empty', !item.comments.length);
+    if (item.comments.length) wrap.removeAttribute('data-png-skip'); else wrap.setAttribute('data-png-skip', '');
+    list.innerHTML = '';
+    for (const c of item.comments) {
+      const li = document.createElement('li');
+      li.className = 'followup' + (c.resolved ? ' is-resolved' : '');
+      const meta = document.createElement('div');
+      meta.className = 'followup-meta';
+      const kindLabel = c.kind === 'question' ? 'Question' : 'Comment';
+      meta.innerHTML =
+        '<span class="followup-kind followup-kind-' + escapeHtml(c.kind) + '">' + kindLabel + '</span>' +
+        '<span class="followup-author">' + escapeHtml(c.author) + '</span>' +
+        '<span class="followup-time">' + escapeHtml(formatStamp(c.created_at)) + '</span>' +
+        (c.resolved ? '<span class="followup-resolved-tag">Resolved</span>' : '');
+      const tools = document.createElement('span');
+      tools.className = 'followup-tools';
+      tools.setAttribute('data-png-skip', '');
+      const resolveBtn = document.createElement('button');
+      resolveBtn.type = 'button';
+      resolveBtn.className = 'btn btn-ghost btn-sm';
+      resolveBtn.textContent = c.resolved ? 'Reopen' : 'Resolve';
+      resolveBtn.addEventListener('click', async () => {
+        resolveBtn.disabled = true;
+        try {
+          const updated = await api('/api/comments/' + encodeURIComponent(c.id), {
+            method: 'PATCH', body: JSON.stringify({ resolved: !c.resolved })
+          });
+          c.resolved = updated.resolved === true || updated.resolved === 'true';
+          render(); onChange();
+        } catch (err) { toast(err.message, 'error'); resolveBtn.disabled = false; }
+      });
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'btn btn-ghost btn-sm';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', async () => {
+        if (!window.confirm('Delete this ' + kindLabel.toLowerCase() + '?')) return;
+        try {
+          await api('/api/comments/' + encodeURIComponent(c.id), { method: 'DELETE' });
+          item.comments = item.comments.filter((x) => x.id !== c.id);
+          render(); onChange();
+        } catch (err) { toast(err.message, 'error'); }
+      });
+      tools.appendChild(resolveBtn);
+      tools.appendChild(delBtn);
+      meta.appendChild(tools);
+      const text = document.createElement('div');
+      text.className = 'followup-body';
+      text.textContent = c.body;
+      li.appendChild(meta);
+      li.appendChild(text);
+      list.appendChild(li);
+    }
+    onChange();
+  }
+
+  function openForm() {
+    form.hidden = false;
+    addBtn.hidden = true;
+    authorIn.value = authorIn.value || getReviewerName();
+    (authorIn.value ? bodyIn : authorIn).focus();
+  }
+  function closeForm() {
+    form.hidden = true;
+    addBtn.hidden = false;
+    bodyIn.value = '';
+  }
+  addBtn.addEventListener('click', openForm);
+  form.querySelector('.followups-cancel').addEventListener('click', closeForm);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const author = authorIn.value.trim();
+    const text = bodyIn.value.trim();
+    if (!author) { toast('Enter your name', 'error'); authorIn.focus(); return; }
+    if (!text) { toast('Enter your comment or question', 'error'); bodyIn.focus(); return; }
+    const submit = form.querySelector('button[type="submit"]');
+    submit.disabled = true;
+    try {
+      const row = await api('/api/topics/' + encodeURIComponent(topic.id) + '/comments', {
+        method: 'POST',
+        body: JSON.stringify({ week_ending: weekEnding, kind: kindSel.value, author, body: text })
+      });
+      row.resolved = row.resolved === true || row.resolved === 'true';
+      item.comments.push(row);
+      try { localStorage.setItem(REVIEWER_KEY, author); } catch (err) { /* storage blocked */ }
+      closeForm();
+      render();
+      toast('Follow-up posted');
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  render();
+  return wrap;
+}
+
 async function showWeekly(initialEnding) {
   const fromHash = typeof location !== 'undefined' && location.hash.startsWith('#weekly=')
     ? location.hash.slice('#weekly='.length)
@@ -1581,26 +1773,16 @@ async function showWeekly(initialEnding) {
     }
     dateField.appendChild(lab);
     dateField.appendChild(sel);
-    const printAction = document.createElement('div');
-    printAction.className = 'print-action';
-    const printBtn = document.createElement('button');
-    printBtn.type = 'button';
-    printBtn.className = 'btn';
-    printBtn.textContent = 'Print';
-    printBtn.title = 'Opens print dialog · use Save as PDF';
-    printBtn.addEventListener('click', () => window.print());
-    printAction.appendChild(printBtn);
+    const pngBtn = document.createElement('button');
+    pngBtn.type = 'button';
+    pngBtn.className = 'btn';
+    pngBtn.textContent = 'Download PNG';
+    pngBtn.title = 'Download the whole weekly report as an image';
+    pngBtn.addEventListener('click', () => exportPng(pngBtn, () => document.getElementById('weekly-export'), 'weekly-report-' + data.week_ending, dropRailColumn));
     headActions.appendChild(dateField);
-    headActions.appendChild(printAction);
+    headActions.appendChild(pngBtn);
     head.appendChild(headActions);
     app.appendChild(head);
-
-    /* Win F — print-only pack header (light PDF) */
-    const printHeader = document.createElement('div');
-    printHeader.className = 'print-pack-header print-only';
-    printHeader.setAttribute('aria-hidden', 'true');
-    printHeader.textContent = 'Weekly report · week ending ' + formatDate(data.week_ending);
-    app.appendChild(printHeader);
 
     sel.addEventListener('change', () => {
       ending = sel.value;
@@ -1619,6 +1801,7 @@ async function showWeekly(initialEnding) {
     cover.innerHTML =
       '<div class="weekly-cover-title">Weekly status — week ending ' + escapeHtml(formatDate(data.week_ending)) + '</div>' +
       '<div class="weekly-cover-stats">' +
+        '<span class="weekly-cover-stat weekly-cover-followups" data-png-skip hidden></span>' +
         '<span class="weekly-cover-stat"><b>' + items.length + '</b> topic' + (items.length === 1 ? '' : 's') + '</span>' +
         '<span class="weekly-cover-stat rag-red"><b>' + ragCounts.Red + '</b> Red</span>' +
         '<span class="weekly-cover-stat rag-amber"><b>' + ragCounts.Amber + '</b> Amber</span>' +
@@ -1667,7 +1850,7 @@ async function showWeekly(initialEnding) {
     } else {
       const list = document.createElement('ol');
       list.className = 'weekly-attention-list';
-      for (const item of attentionCandidates) {
+      for (const [attnIdx, item] of attentionCandidates.entries()) {
         const topic = item.topic || {};
         const report = item.report || {};
         const tid = topic.id || '';
@@ -1688,6 +1871,7 @@ async function showWeekly(initialEnding) {
         btn.title = titleText + ' · ' + ragLabel;
         const ragClass = rag ? ('rag-' + rag.toLowerCase()) : 'rag-none';
         btn.innerHTML =
+          '<span class="weekly-attention-num" aria-hidden="true">' + (attnIdx + 1) + '.' + '</span>' +
           '<span class="weekly-attention-name">' + escapeHtml(titleText) + '</span>' +
           '<span class="weekly-attention-sep" aria-hidden="true"> — </span>' +
           '<span class="weekly-attention-rag ' + ragClass + '">' + escapeHtml(ragLabel) + '</span>' +
@@ -1716,7 +1900,18 @@ async function showWeekly(initialEnding) {
       attention.appendChild(list);
       front.appendChild(attention);
     }
-    app.appendChild(front);
+    const exportWrap = document.createElement('div');
+    exportWrap.id = 'weekly-export';
+    exportWrap.appendChild(front);
+    app.appendChild(exportWrap);
+
+    function updateFollowUpCount() {
+      const el = cover.querySelector('.weekly-cover-followups');
+      if (!el) return;
+      const open = items.reduce((n, it) => n + (it.comments || []).filter((c) => !c.resolved).length, 0);
+      el.hidden = !open;
+      el.innerHTML = '<b>' + open + '</b> open follow-up' + (open === 1 ? '' : 's');
+    }
 
     const layout = document.createElement('div');
     layout.className = 'weekly-layout';
@@ -1730,13 +1925,14 @@ async function showWeekly(initialEnding) {
       empty.innerHTML = '<p>No topic reports for this week.</p><p class="weekly-empty-hint">Choose another reporting week above, or add updates from the topics list.</p>';
       pack.appendChild(empty);
       layout.appendChild(pack);
-      app.appendChild(layout);
+      exportWrap.appendChild(layout);
       return;
     }
 
     /* Win D — topic jump rail (priority / sort_order — same as cards) */
     const rail = document.createElement('nav');
     rail.className = 'jump-rail';
+    rail.setAttribute('data-png-skip', '');
     rail.setAttribute('aria-label', 'Topics on this page');
     const railTitle = document.createElement('div');
     railTitle.className = 'jump-rail-title';
@@ -1810,6 +2006,15 @@ async function showWeekly(initialEnding) {
       statusWrap.className = 'weekly-section-status';
       statusWrap.innerHTML = statusUnit(report.rag, report.trend);
       headEl.appendChild(statusWrap);
+      const topicPng = document.createElement('button');
+      topicPng.type = 'button';
+      topicPng.className = 'btn btn-ghost btn-sm weekly-topic-png';
+      topicPng.setAttribute('data-png-skip', '');
+      topicPng.textContent = 'PNG';
+      topicPng.title = 'Download this topic as an image';
+      topicPng.addEventListener('click', () =>
+        exportPng(topicPng, () => section, (topic.name || 'topic') + '-' + data.week_ending));
+      headEl.insertBefore(topicPng, statusWrap);
       section.appendChild(headEl);
 
       const isRisk = report.rag === 'Red' || report.rag === 'Amber';
@@ -1888,11 +2093,12 @@ async function showWeekly(initialEnding) {
       }
 
       section.appendChild(mainRow);
+      section.appendChild(buildFollowUps(item, data.week_ending, updateFollowUpCount));
       pack.appendChild(section);
     }
 
     layout.appendChild(pack);
-    app.appendChild(layout);
+    exportWrap.appendChild(layout);
 
     /* Active topic while scrolling */
     const railItems = Array.from(railList.querySelectorAll('.jump-rail-item'));
@@ -1964,6 +2170,14 @@ window.addEventListener('hashchange', () => {
     if (/^\d{4}-\d{2}-\d{2}$/.test(d)) showWeekly(d);
   } else if (!location.hash) {
     showHome();
+  }
+});
+
+/* Printing is disabled — use Download PNG on the weekly report. */
+window.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+    e.preventDefault();
+    toast('Printing is disabled — use Download PNG on the weekly report', 'error');
   }
 });
 

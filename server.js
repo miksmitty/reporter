@@ -14,6 +14,7 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const TOPICS_FILE = path.join(DATA_DIR, 'topics.csv');
 const REPORTS_FILE = path.join(DATA_DIR, 'reports.csv');
 const KEY_DATES_FILE = path.join(DATA_DIR, 'key_dates.csv');
+const COMMENTS_FILE = path.join(DATA_DIR, 'comments.csv');
 
 const TOPIC_HEADERS = [
   'id', 'name', 'description', 'owner', 'business_unit', 'cadence',
@@ -26,6 +27,12 @@ const REPORT_HEADERS = [
 const KEY_DATE_HEADERS = [
   'id', 'topic_id', 'date', 'description', 'created_at', 'updated_at'
 ];
+
+const COMMENT_HEADERS = [
+  'id', 'topic_id', 'week_ending', 'kind', 'author', 'body', 'resolved',
+  'created_at', 'updated_at'
+];
+const VALID_COMMENT_KINDS = new Set(['comment', 'question']);
 
 const VALID_CADENCES = new Set(['weekly', 'fortnightly', 'monthly']);
 const VALID_RAG = new Set(['Red', 'Amber', 'Green', 'Blue']);
@@ -164,6 +171,18 @@ function loadReports() {
 
 function saveReports(reports) {
   writeCsv(REPORTS_FILE, REPORT_HEADERS, reports);
+}
+
+function loadComments() {
+  return readCsv(COMMENTS_FILE).map((c) => ({ ...c, resolved: c.resolved === 'true' }));
+}
+
+function saveComments(comments) {
+  writeCsv(
+    COMMENTS_FILE,
+    COMMENT_HEADERS,
+    comments.map((c) => ({ ...c, resolved: c.resolved ? 'true' : 'false' }))
+  );
 }
 
 function ensureKeyDatesFile() {
@@ -360,6 +379,7 @@ function weeklyBundle(weekEnding) {
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || (a.name || '').localeCompare(b.name || ''));
   const allReports = loadReports();
   const allKeyDates = loadKeyDates();
+  const allComments = loadComments();
   const items = [];
   for (const topic of topics) {
     const matches = allReports
@@ -376,7 +396,10 @@ function weeklyBundle(weekEnding) {
     const key_dates = allKeyDates
       .filter((k) => k.topic_id === topic.id)
       .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.created_at || '').localeCompare(b.created_at || ''));
-    items.push({ topic, report: matches[0], key_dates });
+    const comments = allComments
+      .filter((c) => c.topic_id === topic.id && c.week_ending === friday)
+      .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+    items.push({ topic, report: matches[0], key_dates, comments });
   }
   const weekSet = new Set();
   for (const r of allReports) {
@@ -639,6 +662,61 @@ async function handleApi(req, res, pathname, url) {
     const next = rows.filter((k) => !(k.id === kdId && k.topic_id === topicId));
     if (next.length === rows.length) return sendError(res, 404, 'Key date not found');
     saveKeyDates(next);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Management follow-up comments / questions on a topic within a reporting week
+  const commentsMatch = pathname.match(/^\/api\/topics\/([^/]+)\/comments$/);
+  if (commentsMatch && method === 'POST') {
+    const topicId = decodeURIComponent(commentsMatch[1]);
+    if (!loadTopics().find((t) => t.id === topicId)) return sendError(res, 404, 'Topic not found');
+    const body = await readBody(req);
+    const week = String(body.week_ending || '').trim();
+    const kind = String(body.kind || 'comment').trim();
+    const author = String(body.author || '').trim();
+    const text = String(body.body || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(week)) return sendError(res, 400, 'week_ending must be YYYY-MM-DD');
+    if (!VALID_COMMENT_KINDS.has(kind)) return sendError(res, 400, 'kind must be comment or question');
+    if (!author) return sendError(res, 400, 'Your name is required');
+    if (author.length > 80) return sendError(res, 400, 'Name is too long (max 80)');
+    if (!text) return sendError(res, 400, 'Comment text is required');
+    if (text.length > 2000) return sendError(res, 400, 'Comment is too long (max 2000 characters)');
+    const ts = nowIso();
+    const row = {
+      id: randomUUID(),
+      topic_id: topicId,
+      week_ending: weekEndingFridayContaining(week),
+      kind,
+      author,
+      body: text,
+      resolved: false,
+      created_at: ts,
+      updated_at: ts
+    };
+    const rows = loadComments();
+    rows.push(row);
+    saveComments(rows);
+    return sendJson(res, 201, row);
+  }
+
+  const commentItemMatch = pathname.match(/^\/api\/comments\/([^/]+)$/);
+  if (commentItemMatch && method === 'PATCH') {
+    const id = decodeURIComponent(commentItemMatch[1]);
+    const body = await readBody(req);
+    const rows = loadComments();
+    const idx = rows.findIndex((c) => c.id === id);
+    if (idx === -1) return sendError(res, 404, 'Comment not found');
+    if (body.resolved !== undefined) rows[idx].resolved = body.resolved === true || body.resolved === 'true';
+    rows[idx].updated_at = nowIso();
+    saveComments(rows);
+    return sendJson(res, 200, rows[idx]);
+  }
+  if (commentItemMatch && method === 'DELETE') {
+    const id = decodeURIComponent(commentItemMatch[1]);
+    const rows = loadComments();
+    const next = rows.filter((c) => c.id !== id);
+    if (next.length === rows.length) return sendError(res, 404, 'Comment not found');
+    saveComments(next);
     return sendJson(res, 200, { ok: true });
   }
 
