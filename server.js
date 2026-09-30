@@ -7,7 +7,6 @@ const { URL } = require('url');
 const { randomUUID } = require('crypto');
 
 const PORT = Number(process.env.PORT) || 3080;
-const HOST = '0.0.0.0';
 const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, 'data');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -784,6 +783,7 @@ const server = http.createServer(async (req, res) => {
 
 ensureKeyDatesFile();
 
-server.listen(PORT, HOST, () => {
-  console.log(`reporter listening on http://${HOST}:${PORT}`);
+// No host given, so it listens on both IPv4 and IPv6 (a proxy may reach it as localhost -> ::1).
+server.listen(PORT, () => {
+  console.log(`reporter running at http://localhost:${PORT}`);
 });
