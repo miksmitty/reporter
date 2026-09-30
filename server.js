@@ -313,7 +313,7 @@ function serveStatic(req, res, urlPath, searchParams) {
   }
   // Behind a proxy the app may sit under a path prefix that isn't stripped, so a file not found
   // at its full path is looked for by name alone.
-  const byName = path.join(PUBLIC_DIR, rel.endsWith('/') ? 'index.html' : path.basename(rel));
+  const byName = path.join(PUBLIC_DIR, rel.endsWith('/') || !path.extname(rel) ? 'index.html' : path.basename(rel));
   fs.readFile(filePath, (err0, data0) => {
     if (!err0) return respond(filePath, data0);
     fs.readFile(byName, (err, data) => {
