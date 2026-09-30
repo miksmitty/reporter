@@ -1132,7 +1132,7 @@ function renderReportPanel(title, reports, emptyMsg, cadence, copyHooks) {
       copyStatusBtn.type = 'button';
       copyStatusBtn.className = 'btn btn-ghost btn-sm copy-section-btn';
       const src = historySourceShort(report);
-      copyStatusBtn.textContent = src ? 'From ' + src : 'Copy';
+      copyStatusBtn.textContent = 'Copy status';
       copyStatusBtn.title = src ? 'Copy RAG and trend from ' + src : 'Copy RAG and trend into the form';
       copyStatusBtn.addEventListener('click', copyStatus);
       meta.appendChild(copyStatusBtn);
@@ -1153,7 +1153,7 @@ function renderReportPanel(title, reports, emptyMsg, cadence, copyHooks) {
         btn.type = 'button';
         btn.className = 'btn btn-ghost btn-sm copy-section-btn';
         const src = historySourceShort(report);
-        btn.textContent = src ? 'From ' + src : 'Copy →';
+        btn.textContent = 'Copy to form';
         btn.title = src ? `Copy ${s.label} from ${src}` : `Copy ${s.label} into the new form`;
         btn.addEventListener('click', () => copySection(s.key, s.html, s.label));
         labRow.appendChild(btn);
@@ -1332,7 +1332,7 @@ function renderTopicUpdate(topic, previous, history) {
 
   const fields = {};
 
-  function addRichField(key, label, placeholder, rteClass) {
+  function addRichField(key, label, placeholder, rteClass, parent = formPanel) {
     const field = document.createElement('div');
     field.className = 'field';
     const lab = document.createElement('label');
@@ -1340,14 +1340,17 @@ function renderTopicUpdate(topic, previous, history) {
     field.appendChild(lab);
     const rte = createRte(key, { placeholder, className: rteClass || '' });
     field.appendChild(rte);
-    formPanel.appendChild(field);
+    parent.appendChild(field);
     fields[key] = rte;
     return field;
   }
 
   addRichField('exec_summary', 'Exec summary — for leadership', 'Brief narrative for leadership…', 'rte-hero');
-  addRichField('achievements', 'Achievements', 'What landed this period…', 'rte-compact');
-  addRichField('next_steps', 'Next steps', 'Priorities for the next period…', 'rte-compact rte-next-steps');
+  const pair = document.createElement('div');
+  pair.className = 'field-pair';
+  formPanel.appendChild(pair);
+  addRichField('achievements', 'Achievements', 'What landed this period…', 'rte-compact', pair);
+  addRichField('next_steps', 'Next steps', 'Priorities for the next period…', 'rte-compact rte-next-steps', pair);
 
   const gtgField = document.createElement('div');
   gtgField.className = 'field gtg-block';
@@ -1581,15 +1584,11 @@ async function showWeekly(initialEnding) {
     printAction.className = 'print-action';
     const printBtn = document.createElement('button');
     printBtn.type = 'button';
-    printBtn.className = 'btn btn-ghost';
+    printBtn.className = 'btn';
     printBtn.textContent = 'Print';
     printBtn.title = 'Opens print dialog · use Save as PDF';
     printBtn.addEventListener('click', () => window.print());
-    const printHint = document.createElement('span');
-    printHint.className = 'print-hint';
-    printHint.textContent = 'Opens print dialog · use Save as PDF';
     printAction.appendChild(printBtn);
-    printAction.appendChild(printHint);
     headActions.appendChild(dateField);
     headActions.appendChild(printAction);
     head.appendChild(headActions);
@@ -1619,11 +1618,11 @@ async function showWeekly(initialEnding) {
     cover.innerHTML =
       '<div class="weekly-cover-title">Weekly status — week ending ' + escapeHtml(formatDate(data.week_ending)) + '</div>' +
       '<div class="weekly-cover-stats">' +
-        '<span class="weekly-cover-stat">' + items.length + ' topic' + (items.length === 1 ? '' : 's') + '</span>' +
-        '<span class="weekly-cover-stat rag-red">' + ragCounts.Red + ' Red</span>' +
-        '<span class="weekly-cover-stat rag-amber">' + ragCounts.Amber + ' Amber</span>' +
-        '<span class="weekly-cover-stat rag-green">' + ragCounts.Green + ' Green</span>' +
-        '<span class="weekly-cover-stat rag-blue">' + ragCounts.Blue + ' Complete</span>' +
+        '<span class="weekly-cover-stat"><b>' + items.length + '</b> topic' + (items.length === 1 ? '' : 's') + '</span>' +
+        '<span class="weekly-cover-stat rag-red"><b>' + ragCounts.Red + '</b> Red</span>' +
+        '<span class="weekly-cover-stat rag-amber"><b>' + ragCounts.Amber + '</b> Amber</span>' +
+        '<span class="weekly-cover-stat rag-green"><b>' + ragCounts.Green + '</b> Green</span>' +
+        '<span class="weekly-cover-stat rag-blue"><b>' + ragCounts.Blue + '</b> Complete</span>' +
       '</div>';
     /* Win E — Needs attention callouts (under cover; same topic-{id} anchors as Win D) */
     const front = document.createElement('div');
