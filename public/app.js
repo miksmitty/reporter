@@ -1659,10 +1659,14 @@ async function exportPng(btn, getNode, name, onClone) {
 
 /* ── Management follow-up comments / questions ─────────────────────────── */
 
-const REVIEWER_KEY = 'reporter-reviewer-name';
 
-function getReviewerName() {
-  try { return localStorage.getItem(REVIEWER_KEY) || ''; } catch (e) { return ''; }
+let currentUserPromise = null;
+/** Signed-in user's display name, resolved server-side (AD/Entra when deployed). */
+function getCurrentUser() {
+  if (!currentUserPromise) {
+    currentUserPromise = api('/api/me').then((r) => (r && r.name) || 'Reviewer').catch(() => 'Reviewer');
+  }
+  return currentUserPromise;
 }
 
 function formatStamp(iso) {
@@ -1704,29 +1708,15 @@ function buildFollowUps(item, weekEnding, onChange) {
   form.innerHTML =
     '<textarea class="followups-body" rows="3" maxlength="2000" placeholder="Add a comment…" aria-label="Comment"></textarea>' +
     '<div class="followups-form-actions">' +
-      '<span class="followups-as">' +
-        '<span class="followups-as-label">as <b class="followups-as-name"></b> <button type="button" class="followups-as-change">change</button></span>' +
-        '<input class="followups-author" type="text" maxlength="80" placeholder="Your name" aria-label="Your name" hidden />' +
-      '</span>' +
+      '<span class="followups-as">Commenting as <b class="followups-as-name"></b></span>' +
       '<button type="button" class="btn btn-ghost btn-sm followups-cancel">Cancel</button>' +
       '<button type="submit" class="btn btn-primary btn-sm">Post</button>' +
     '</div>';
   wrap.appendChild(form);
 
-  const asLabel = form.querySelector('.followups-as-label');
   const asName = form.querySelector('.followups-as-name');
-  const authorIn = form.querySelector('.followups-author');
   const bodyIn = form.querySelector('.followups-body');
 
-  function showNameField(edit) {
-    authorIn.hidden = !edit;
-    asLabel.hidden = edit;
-    if (!edit) asName.textContent = authorIn.value.trim();
-  }
-  form.querySelector('.followups-as-change').addEventListener('click', () => { showNameField(true); authorIn.focus(); });
-  authorIn.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); if (authorIn.value.trim()) { showNameField(false); bodyIn.focus(); } }
-  });
   bodyIn.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); form.requestSubmit(); }
     if (e.key === 'Escape') closeForm();
@@ -1793,9 +1783,8 @@ function buildFollowUps(item, weekEnding, onChange) {
   function openForm() {
     form.hidden = false;
     addBtn.hidden = true;
-    authorIn.value = authorIn.value || getReviewerName();
-    showNameField(!authorIn.value);
-    (authorIn.value ? bodyIn : authorIn).focus();
+    getCurrentUser().then((n) => { asName.textContent = n; });
+    bodyIn.focus();
   }
   function closeForm() {
     form.hidden = true;
@@ -1806,20 +1795,17 @@ function buildFollowUps(item, weekEnding, onChange) {
   form.querySelector('.followups-cancel').addEventListener('click', closeForm);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const author = authorIn.value.trim();
     const text = bodyIn.value.trim();
     if (!text) { toast('Enter your comment', 'error'); bodyIn.focus(); return; }
-    if (!author) { showNameField(true); toast('Enter your name', 'error'); authorIn.focus(); return; }
     const submit = form.querySelector('button[type="submit"]');
     submit.disabled = true;
     try {
       const row = await api('/api/topics/' + encodeURIComponent(topic.id) + '/comments', {
         method: 'POST',
-        body: JSON.stringify({ week_ending: weekEnding, kind: 'comment', author, body: text })
+        body: JSON.stringify({ week_ending: weekEnding, kind: 'comment', body: text })
       });
       row.resolved = row.resolved === true || row.resolved === 'true';
       item.comments.push(row);
-      try { localStorage.setItem(REVIEWER_KEY, author); } catch (err) { /* storage blocked */ }
       closeForm();
       render();
       toast('Comment posted');

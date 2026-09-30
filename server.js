@@ -428,8 +428,33 @@ function isEmptyRich(html) {
 
 // ── API handlers ────────────────────────────────────────────────────────────
 
+/**
+ * Identity of the signed-in user. Behind Azure App Service authentication (Entra ID / AD) the
+ * platform injects X-MS-CLIENT-PRINCIPAL-NAME (UPN) and, in the encoded principal, a display name.
+ * Locally there is no auth, so fall back to REPORTER_USER or a generic label.
+ */
+function currentUser(req) {
+  const h = req.headers;
+  let name = '';
+  const encoded = h['x-ms-client-principal'];
+  if (encoded) {
+    try {
+      const principal = JSON.parse(Buffer.from(String(encoded), 'base64').toString('utf8'));
+      const claims = Array.isArray(principal.claims) ? principal.claims : [];
+      const pick = (t) => (claims.find((c) => c.typ === t) || {}).val;
+      name = pick('name') || pick('http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name') || '';
+    } catch { /* fall through to header */ }
+  }
+  name = name || String(h['x-ms-client-principal-name'] || '').trim() || process.env.REPORTER_USER || 'Reviewer';
+  return name.slice(0, 80);
+}
+
 async function handleApi(req, res, pathname, url) {
   const method = req.method;
+
+  if (pathname === '/api/me' && method === 'GET') {
+    return sendJson(res, 200, { name: currentUser(req) });
+  }
 
   if (pathname === '/api/health' && method === 'GET') {
     return sendJson(res, 200, { ok: true, service: 'reporter', time: nowIso() });
@@ -673,12 +698,10 @@ async function handleApi(req, res, pathname, url) {
     const body = await readBody(req);
     const week = String(body.week_ending || '').trim();
     const kind = String(body.kind || 'comment').trim();
-    const author = String(body.author || '').trim();
+    const author = currentUser(req);
     const text = String(body.body || '').trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(week)) return sendError(res, 400, 'week_ending must be YYYY-MM-DD');
     if (!VALID_COMMENT_KINDS.has(kind)) return sendError(res, 400, 'kind must be comment or question');
-    if (!author) return sendError(res, 400, 'Your name is required');
-    if (author.length > 80) return sendError(res, 400, 'Name is too long (max 80)');
     if (!text) return sendError(res, 400, 'Comment text is required');
     if (text.length > 2000) return sendError(res, 400, 'Comment is too long (max 2000 characters)');
     const ts = nowIso();
