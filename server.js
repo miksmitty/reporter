@@ -126,7 +126,10 @@ function parseCsv(text) {
 
 function readCsv(filePath) {
   if (!fs.existsSync(filePath)) return [];
-  const text = fs.readFileSync(filePath, 'utf8');
+  const buf = fs.readFileSync(filePath);
+  let text;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { text = buf.toString('latin1'); }
+  text = text.replace(/^\ufeff/, '');
   if (!text.trim()) return [];
   return parseCsv(text);
 }
@@ -298,7 +301,7 @@ const MIME = {
 
 function serveStatic(req, res, urlPath, searchParams) {
   let rel = urlPath === '/' ? '/index.html' : urlPath;
-  rel = decodeURIComponent(rel.split('?')[0]);
+  try { rel = decodeURIComponent(rel.split('?')[0]); } catch { rel = '/index.html'; }
   if (rel.includes('..')) {
     sendError(res, 403, 'Forbidden');
     return;
@@ -308,11 +311,17 @@ function serveStatic(req, res, urlPath, searchParams) {
     sendError(res, 403, 'Forbidden');
     return;
   }
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      sendError(res, 404, 'Not found');
-      return;
-    }
+  // Behind a proxy the app may sit under a path prefix that isn't stripped, so a file not found
+  // at its full path is looked for by name alone.
+  const byName = path.join(PUBLIC_DIR, rel.endsWith('/') ? 'index.html' : path.basename(rel));
+  fs.readFile(filePath, (err0, data0) => {
+    if (!err0) return respond(filePath, data0);
+    fs.readFile(byName, (err, data) => {
+      if (err) return sendError(res, 404, 'Not found');
+      respond(byName, data);
+    });
+  });
+  function respond(filePath, data) {
     const ext = path.extname(filePath).toLowerCase();
     const base = path.basename(filePath).toLowerCase();
     const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
@@ -331,7 +340,7 @@ function serveStatic(req, res, urlPath, searchParams) {
       return;
     }
     res.end(data);
-  });
+  }
 }
 
 function addDaysIso(dateStr, days) {
@@ -752,10 +761,12 @@ const server = http.createServer(async (req, res) => {
   try {
     const host = req.headers.host || `localhost:${PORT}`;
     const url = new URL(req.url || '/', `http://${host}`);
-    const pathname = url.pathname;
+    let pathname = url.pathname;
 
-    if (pathname.startsWith('/api/')) {
-      await handleApi(req, res, pathname, url);
+    // The API is matched on the end of the path so a proxy path prefix doesn't break it.
+    const apiAt = pathname.indexOf('/api/');
+    if (apiAt !== -1) {
+      await handleApi(req, res, pathname.slice(apiAt), url);
       return;
     }
 

@@ -42,7 +42,7 @@ function toast(message, type = 'ok') {
 }
 
 async function api(path, options = {}) {
-  const res = await fetch(path, {
+  const res = await fetch(String(path).replace(/^\//, ''), {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options
   });
@@ -955,7 +955,7 @@ async function openTopicModal(existing = null, opts = {}) {
   });
 
   async function syncKeyDates(topicId) {
-    const base = '/api/topics/' + encodeURIComponent(topicId) + '/key-dates';
+    const base = 'api/topics/' + encodeURIComponent(topicId) + '/key-dates';
     for (const id of removedIds) {
       await api(base + '/' + encodeURIComponent(id), { method: 'DELETE' });
     }
