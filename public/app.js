@@ -3,9 +3,32 @@
 const app = document.getElementById('app');
 const toastHost = document.getElementById('toast-host');
 
-document.getElementById('btn-home').addEventListener('click', () => {
-  if (typeof history !== 'undefined' && location.hash) history.replaceState(null, '', location.pathname + location.search);
-  showHome();
+let pendingTopicFilter = null;
+
+function setNav(name) {
+  document.querySelectorAll('.nav-item').forEach((a) => {
+    const on = a.dataset.nav === name;
+    a.classList.toggle('active', on);
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
+}
+
+function setHash(hash) {
+  if (typeof history === 'undefined') return;
+  if (location.hash !== hash) history.replaceState(null, '', location.pathname + location.search + hash);
+}
+
+document.getElementById('btn-home').addEventListener('click', () => showOverview());
+document.getElementById('btn-new-topic').addEventListener('click', () => openNewTopicModal());
+document.querySelectorAll('.nav-item').forEach((a) => {
+  a.addEventListener('click', (e) => {
+    e.preventDefault();
+    const n = a.dataset.nav;
+    if (n === 'overview') showOverview();
+    else if (n === 'topics') showHome();
+    else showWeekly();
+    window.scrollTo(0, 0);
+  });
 });
 
 function toast(message, type = 'ok') {
@@ -297,7 +320,143 @@ function createRte(id, { placeholder = '', value = '', className = '' } = {}) {
 
 /* ── Views ────────────────────────────────────────────────────────────────── */
 
+async function showOverview() {
+  setNav('overview');
+  setHash('#overview');
+  app.innerHTML = '<div class="loading">Loading overview…</div>';
+  try {
+    const topics = await api('/api/topics');
+    renderOverview(topics);
+  } catch (err) {
+    app.innerHTML = `<div class="empty-state">Failed to load: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderOverview(topics) {
+  const active = topics.filter((t) => t.active !== false);
+  const counts = { Red: 0, Amber: 0, Green: 0, Blue: 0, none: 0 };
+  for (const t of active) {
+    const r = t.latest_report && t.latest_report.rag;
+    if (r && counts[r] !== undefined) counts[r] += 1; else counts.none += 1;
+  }
+
+  const ending = weekEndingFridayContaining(todayUTC());
+  const staleBefore = { weekly: mondayOfWeekEnding(ending), fortnightly: addDays(mondayOfWeekEnding(ending), -7), monthly: addDays(mondayOfWeekEnding(ending), -24) };
+  const due = active.filter((t) => {
+    if (t.latest_report && t.latest_report.rag === 'Blue') return false;
+    const pe = t.latest_report && t.latest_report.period_end;
+    return !pe || pe < (staleBefore[t.cadence] || staleBefore.weekly);
+  });
+
+  const RAG_RANK = { Red: 0, Amber: 1 };
+  const attention = active
+    .filter((t) => t.latest_report && (t.latest_report.rag === 'Red' || t.latest_report.rag === 'Amber'))
+    .sort((a, b) => RAG_RANK[a.latest_report.rag] - RAG_RANK[b.latest_report.rag] || (a.sort_order || 0) - (b.sort_order || 0));
+  const recent = active
+    .filter((t) => t.latest_report)
+    .sort((a, b) => String(b.latest_report.created_at || b.latest_report.period_end).localeCompare(String(a.latest_report.created_at || a.latest_report.period_end)))
+    .slice(0, 6);
+
+  const hour = new Date().getHours();
+  const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const nowLabel = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+  app.innerHTML = '';
+  const hero = document.createElement('div');
+  hero.className = 'ov-hero';
+  hero.innerHTML = `<div><h1>${greet}</h1><p>${escapeHtml(nowLabel)} · Week ending ${escapeHtml(formatDate(ending))}</p></div>`;
+  const heroActions = document.createElement('div');
+  heroActions.className = 'page-head-actions';
+  const packBtn = document.createElement('button');
+  packBtn.type = 'button';
+  packBtn.className = 'btn btn-primary';
+  packBtn.textContent = 'Open this week’s pack';
+  packBtn.addEventListener('click', () => showWeekly(ending));
+  heroActions.appendChild(packBtn);
+  hero.appendChild(heroActions);
+  app.appendChild(hero);
+
+  const tiles = document.createElement('div');
+  tiles.className = 'ov-tiles';
+  const tileDefs = [
+    ['', active.length, 'Active topics', ''],
+    ['red', counts.Red, 'Red', 'Red'],
+    ['amber', counts.Amber, 'Amber', 'Amber'],
+    ['green', counts.Green, 'Green', 'Green'],
+    ['blue', counts.Blue, 'Complete', 'Blue'],
+    ['', counts.none, 'No report', 'none']
+  ];
+  for (const [cls, n, label, filter] of tileDefs) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ov-tile ' + cls;
+    b.innerHTML = `<b>${n}</b><span>${escapeHtml(label)}</span>`;
+    b.addEventListener('click', () => { pendingTopicFilter = filter; showHome(); });
+    tiles.appendChild(b);
+  }
+  app.appendChild(tiles);
+
+  function topicRow(t, sub) {
+    const li = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ov-row';
+    btn.innerHTML = `
+      <span class="ov-row-name">${escapeHtml(t.name)}</span>
+      ${statusUnit(t.latest_report && t.latest_report.rag, t.latest_report && t.latest_report.trend)}
+      <span class="ov-row-sub">${escapeHtml(sub)}</span>`;
+    btn.addEventListener('click', () => showTopic(t.id));
+    li.appendChild(btn);
+    return li;
+  }
+  function card(title, note, cls) {
+    const c = document.createElement('section');
+    c.className = 'ov-card' + (cls ? ' ' + cls : '');
+    c.innerHTML = `<h2>${escapeHtml(title)}<small>${escapeHtml(note)}</small></h2>`;
+    return c;
+  }
+  function fill(c, items, emptyMsg) {
+    if (!items.length) {
+      const p = document.createElement('p');
+      p.className = 'ov-empty';
+      p.textContent = emptyMsg;
+      c.appendChild(p);
+      return;
+    }
+    const ul = document.createElement('ul');
+    ul.className = 'ov-list';
+    items.forEach((li) => ul.appendChild(li));
+    c.appendChild(ul);
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'ov-grid';
+
+  const attCard = card('Needs attention', `${attention.length} Red / Amber`);
+  fill(attCard, attention.map((t) => {
+    const plan = plainTextSnippet(t.latest_report.gtg_plan || t.latest_report.exec_summary || '', 110);
+    return topicRow(t, plan || `${t.owner || 'No owner'}`);
+  }), 'Nothing is Red or Amber.');
+  grid.appendChild(attCard);
+
+  const dueCard = card('Due for an update', `${due.length} topic${due.length === 1 ? '' : 's'}`);
+  fill(dueCard, due.map((t) => topicRow(t, t.latest_report
+    ? `Last update: ${formatDate(t.latest_report.period_end)} · ${t.owner || 'No owner'}`
+    : `No updates yet · ${t.owner || 'No owner'}`)), 'Every topic is up to date.');
+  grid.appendChild(dueCard);
+
+  const recentCard = card('Recent updates', 'Latest submitted', 'wide');
+  fill(recentCard, recent.map((t) => topicRow(t,
+    `${t.owner || 'No owner'} · ${formatDate(t.latest_report.period_end)} · ${plainTextSnippet(t.latest_report.exec_summary || '', 90)}`)),
+  'No updates yet.');
+  grid.appendChild(recentCard);
+
+  app.appendChild(grid);
+}
+
 async function showHome() {
+  setNav('topics');
+  setHash('#topics');
   app.innerHTML = '<div class="loading">Loading topics…</div>';
   try {
     const topics = await api('/api/topics');
@@ -402,6 +561,10 @@ function renderHome(topics) {
 
   const qInput = toolbar.querySelector('#topic-filter-q');
   const ragFilter = toolbar.querySelector('#topic-filter-rag');
+  if (pendingTopicFilter) {
+    ragFilter.value = pendingTopicFilter;
+    pendingTopicFilter = null;
+  }
   const cadenceFilter = toolbar.querySelector('#topic-filter-cadence');
   const sortSelect = toolbar.querySelector('#topic-sort');
 
@@ -899,6 +1062,7 @@ function openNewTopicModal() {
 
 
 async function showTopic(topicId) {
+  setNav('topics');
   app.innerHTML = '<div class="loading">Loading…</div>';
   try {
     const topics = await api('/api/topics');
@@ -1656,6 +1820,7 @@ function buildFollowUps(item, weekEnding, onChange) {
 }
 
 async function showWeekly(initialEnding) {
+  setNav('weekly');
   const fromHash = typeof location !== 'undefined' && location.hash.startsWith('#weekly=')
     ? location.hash.slice('#weekly='.length)
     : '';
@@ -2155,23 +2320,19 @@ async function showWeekly(initialEnding) {
 
 
 
-function bootFromLocation() {
-  if (typeof location !== 'undefined' && location.hash.startsWith('#weekly')) {
-    const raw = location.hash.startsWith('#weekly=') ? location.hash.slice('#weekly='.length) : '';
-    showWeekly(raw || undefined);
-    return;
+function route() {
+  const h = location.hash;
+  if (h.startsWith('#weekly')) {
+    const raw = h.startsWith('#weekly=') ? h.slice('#weekly='.length) : '';
+    showWeekly(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : undefined);
+  } else if (h === '#topics') {
+    showHome();
+  } else {
+    showOverview();
   }
-  showHome();
 }
 
-window.addEventListener('hashchange', () => {
-  if (location.hash.startsWith('#weekly=')) {
-    const d = location.hash.slice('#weekly='.length);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) showWeekly(d);
-  } else if (!location.hash) {
-    showHome();
-  }
-});
+window.addEventListener('hashchange', route);
 
 /* Printing is disabled — use Download PNG on the weekly report. */
 window.addEventListener('keydown', (e) => {
@@ -2182,5 +2343,5 @@ window.addEventListener('keydown', (e) => {
 });
 
 /* boot */
-bootFromLocation();
+route();
 
