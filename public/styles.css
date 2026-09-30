@@ -1349,6 +1349,25 @@ select {
   opacity: 0.95;
 }
 
+
+/* Win F — print helpers (screen) */
+.print-only { display: none !important; }
+.print-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+}
+.print-hint {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  max-width: 12.5rem;
+  text-align: right;
+  line-height: 1.25;
+}
+
 /* Win D — topic jump rail */
 .weekly-layout {
   display: grid;
@@ -1495,6 +1514,113 @@ select {
 .weekly-cover-stat.rag-green { color: var(--rag-green); font-weight: 600; }
 .weekly-cover-stat.rag-blue { color: var(--rag-blue); font-weight: 600; }
 
+/* Win E — Needs attention (under cover strip) */
+.weekly-frontmatter {
+  margin: 0 0 1rem;
+}
+.weekly-frontmatter .weekly-cover {
+  margin-bottom: 0;
+}
+.weekly-attention {
+  margin-top: 0.55rem;
+  padding: 0.65rem 1rem 0.75rem;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  background: var(--bg-elev);
+}
+.weekly-frontmatter .weekly-cover {
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+.weekly-frontmatter:not(:has(.weekly-attention)) .weekly-cover {
+  border-radius: var(--radius-sm);
+  margin-bottom: 0;
+}
+.weekly-attention-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 0 0 0.4rem;
+}
+.weekly-attention-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  counter-reset: attention;
+}
+.weekly-attention-item {
+  margin: 0;
+  counter-increment: attention;
+}
+.weekly-attention-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.15rem;
+  width: 100%;
+  text-align: left;
+  margin: 0;
+  padding: 0.35rem 0.4rem 0.35rem 1.55rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.weekly-attention-link::before {
+  content: counter(attention) ".";
+  position: absolute;
+  left: 0.35rem;
+  top: 0.35rem;
+  color: var(--text-faint);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  min-width: 1.1rem;
+}
+.weekly-attention-link:hover,
+.weekly-attention-link:focus-visible {
+  background: var(--bg-soft);
+  border-color: rgba(43, 91, 176, 0.28);
+  outline: none;
+}
+.weekly-attention-name {
+  font-weight: 650;
+}
+.weekly-attention-sep {
+  color: var(--text-faint);
+}
+.weekly-attention-rag {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-size: 0.75rem;
+}
+.weekly-attention-rag.rag-red { color: var(--rag-red); }
+.weekly-attention-rag.rag-amber { color: var(--rag-amber); }
+.weekly-attention-snip {
+  color: var(--text-muted);
+  font-weight: 400;
+  min-width: 0;
+}
+.weekly-attention-ok {
+  margin: 0;
+  padding: 0.2rem 0.15rem 0.05rem;
+  color: var(--rag-green);
+  font-size: 0.86rem;
+  font-weight: 550;
+  opacity: 0.92;
+}
+
+
 .weekly-section[id^="topic-"] {
   scroll-margin-top: 1rem;
 }
@@ -1616,6 +1742,9 @@ select {
 }
 
 @media print {
+  @page {
+    margin: 12mm 12mm 14mm;
+  }
   :root {
     --bg: #fff;
     --bg-elev: #fff;
@@ -1627,21 +1756,68 @@ select {
     --text-label: #1f2937;
     --accent: #1e40af;
   }
-  body { background: #fff; color: #111827; font-size: 10.5pt; }
+  html, body {
+    background: #fff !important;
+    color: #111827 !important;
+    font-size: 10.5pt;
+  }
+  /* Screen chrome out */
   .topbar,
+  .topbar-sub,
+  .toast-host,
   .no-print,
   .back-row,
   .list-toolbar,
   .weekly-date-field,
   .page-head-actions,
-  .jump-rail { display: none !important; }
+  .print-action,
+  .print-hint,
+  .jump-rail,
+  .previous-toggle { display: none !important; }
+  /* Screen weekly head replaced by print pack header */
+  .weekly-head { display: none !important; }
+  .print-only { display: block !important; }
+  .print-pack-header {
+    display: block !important;
+    font-size: 14pt;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: #111827;
+    margin: 0 0 0.85rem;
+    padding: 0 0 0.4rem;
+    border-bottom: 1.25pt solid #111827;
+  }
   .weekly-layout { display: block; }
   .main { max-width: none; padding: 0; margin: 0; }
-  .weekly-head { margin-bottom: 0.6rem; }
-  .weekly-head h1 { font-size: 16pt; color: #111827; }
+  /* Cover + Needs attention: first printed page only (keep together, avoid carry) */
+  .weekly-frontmatter {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    break-after: avoid;
+    page-break-after: avoid;
+    margin-bottom: 0.75rem;
+  }
   .weekly-cover {
     border-color: #b8c0cc;
     background: #f3f4f6;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .weekly-attention {
+    border-color: #b8c0cc;
+    background: #f9fafb;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .weekly-attention-link {
+    color: #111827;
+    padding-left: 1.4rem;
+    cursor: default;
+  }
+  .weekly-attention-snip { color: #374151; }
+  .weekly-attention-ok { color: #15803d; opacity: 1; }
+  .weekly-attention-rag.rag-red,
+  .weekly-attention-rag.rag-amber {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -1655,6 +1831,7 @@ select {
   .panel, .weekly-section {
     box-shadow: none;
     border: 1px solid #b8c0cc;
+    background: #fff;
     break-inside: avoid;
     page-break-inside: avoid;
   }
@@ -1675,10 +1852,27 @@ select {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  .key-dates-scroll { border-color: #b8c0cc; background: #f9fafb; overflow: visible; }
-  .key-dates-grid { font-size: 8.5pt; }
+  /* Packed key-dates: never clip in PDF */
+  .weekly-kd,
+  .key-dates-block,
+  .key-dates-scroll {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+  .key-dates-scroll {
+    border-color: #b8c0cc;
+    background: #f9fafb;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .key-dates-grid { font-size: 8.5pt; width: 100%; }
   .key-dates-grid th, .key-dates-grid td { padding: 0.35rem 0.25rem; }
-  .kd-cell-text { -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+  .kd-cell-text {
+    -webkit-line-clamp: unset !important;
+    line-clamp: unset !important;
+    overflow: visible !important;
+    display: block !important;
+  }
   .kd-col-head { background: #f3f4f6; }
   .report-section-gtg {
     background: #fff8e8;
@@ -1689,4 +1883,5 @@ select {
   .weekly-section-gtg { border-left-color: #b45309; }
   .report-body { color: #111827; }
   .panel-label { color: #1f2937; }
+  a { color: inherit; text-decoration: none; }
 }

@@ -47,6 +47,27 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+
+function plainTextSnippet(html, maxLen) {
+  const plain = String(html || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!plain) return '';
+  const lim = maxLen == null ? 80 : maxLen;
+  if (plain.length <= lim) return plain;
+  const cut = plain.slice(0, lim);
+  const nicer = cut.replace(/\s+\S*$/, '').trimEnd();
+  return (nicer.length >= Math.min(40, lim) ? nicer : cut.trimEnd()) + '…';
+}
+
+
 function formatDate(isoDate) {
   if (!isoDate) return '—';
   const [y, m, d] = isoDate.split('-').map(Number);
@@ -1448,8 +1469,39 @@ async function showWeekly(initialEnding) {
     : weekEndingFridayContaining(todayUTC());
 
   let jumpRailObserver = null;
+  let jumpRailScrollLock = false;
+  let jumpRailLockedTopicId = null;
+  let jumpRailUnlockTimer = null;
+  let jumpRailUnlockHandler = null;
+
+  function clearJumpRailScrollLock() {
+    jumpRailScrollLock = false;
+    jumpRailLockedTopicId = null;
+    if (jumpRailUnlockTimer) {
+      clearTimeout(jumpRailUnlockTimer);
+      jumpRailUnlockTimer = null;
+    }
+    if (jumpRailUnlockHandler) {
+      window.removeEventListener('scrollend', jumpRailUnlockHandler);
+      jumpRailUnlockHandler = null;
+    }
+  }
+
+  function lockJumpRailUntilScrollEnds(topicId) {
+    clearJumpRailScrollLock();
+    jumpRailScrollLock = true;
+    jumpRailLockedTopicId = topicId || null;
+    const unlock = () => clearJumpRailScrollLock();
+    if (typeof window !== 'undefined' && 'onscrollend' in window) {
+      jumpRailUnlockHandler = unlock;
+      window.addEventListener('scrollend', jumpRailUnlockHandler, { once: true });
+    }
+    /* Safety net for long smooth scrolls / browsers without scrollend */
+    jumpRailUnlockTimer = setTimeout(unlock, 1200);
+  }
 
   async function paint() {
+    clearJumpRailScrollLock();
     if (jumpRailObserver) {
       jumpRailObserver.disconnect();
       jumpRailObserver = null;
@@ -1525,15 +1577,30 @@ async function showWeekly(initialEnding) {
     }
     dateField.appendChild(lab);
     dateField.appendChild(sel);
+    const printAction = document.createElement('div');
+    printAction.className = 'print-action';
     const printBtn = document.createElement('button');
     printBtn.type = 'button';
     printBtn.className = 'btn btn-ghost';
     printBtn.textContent = 'Print';
+    printBtn.title = 'Opens print dialog · use Save as PDF';
     printBtn.addEventListener('click', () => window.print());
+    const printHint = document.createElement('span');
+    printHint.className = 'print-hint';
+    printHint.textContent = 'Opens print dialog · use Save as PDF';
+    printAction.appendChild(printBtn);
+    printAction.appendChild(printHint);
     headActions.appendChild(dateField);
-    headActions.appendChild(printBtn);
+    headActions.appendChild(printAction);
     head.appendChild(headActions);
     app.appendChild(head);
+
+    /* Win F — print-only pack header (light PDF) */
+    const printHeader = document.createElement('div');
+    printHeader.className = 'print-pack-header print-only';
+    printHeader.setAttribute('aria-hidden', 'true');
+    printHeader.textContent = 'Weekly report · week ending ' + formatDate(data.week_ending);
+    app.appendChild(printHeader);
 
     sel.addEventListener('change', () => {
       ending = sel.value;
@@ -1558,7 +1625,98 @@ async function showWeekly(initialEnding) {
         '<span class="weekly-cover-stat rag-green">' + ragCounts.Green + ' Green</span>' +
         '<span class="weekly-cover-stat rag-blue">' + ragCounts.Blue + ' Complete</span>' +
       '</div>';
-    app.appendChild(cover);
+    /* Win E — Needs attention callouts (under cover; same topic-{id} anchors as Win D) */
+    const front = document.createElement('div');
+    front.className = 'weekly-frontmatter';
+    front.appendChild(cover);
+
+    const attention = document.createElement('div');
+    attention.className = 'weekly-attention';
+    attention.setAttribute('aria-label', 'Needs attention');
+    const attentionTitle = document.createElement('div');
+    attentionTitle.className = 'weekly-attention-title';
+    attentionTitle.textContent = 'Needs attention';
+    attention.appendChild(attentionTitle);
+
+    const attentionCandidates = items
+      .filter((it) => {
+        const rag = (it.report && it.report.rag) || '';
+        return rag === 'Red' || rag === 'Amber';
+      })
+      .slice()
+      .sort((a, b) => {
+        const rank = { Red: 0, Amber: 1 };
+        const ra = rank[(a.report && a.report.rag) || ''];
+        const rb = rank[(b.report && b.report.rag) || ''];
+        const raN = ra == null ? 9 : ra;
+        const rbN = rb == null ? 9 : rb;
+        if (raN !== rbN) return raN - rbN;
+        /* items already priority / sort_order — preserve that within same RAG */
+        return 0;
+      })
+      .slice(0, 3);
+
+    if (!items.length) {
+      /* empty week: omit callouts (empty state below) */
+    } else if (!attentionCandidates.length) {
+      const ok = document.createElement('p');
+      ok.className = 'weekly-attention-ok';
+      ok.textContent = 'All topics Green or Complete';
+      attention.appendChild(ok);
+      front.appendChild(attention);
+    } else {
+      const list = document.createElement('ol');
+      list.className = 'weekly-attention-list';
+      for (const item of attentionCandidates) {
+        const topic = item.topic || {};
+        const report = item.report || {};
+        const tid = topic.id || '';
+        const rag = report.rag || '';
+        const ragLabel = rag.toUpperCase();
+        const snip = plainTextSnippet(report.exec_summary, 80);
+        const li = document.createElement('li');
+        li.className = 'weekly-attention-item';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'weekly-attention-link';
+        btn.dataset.topicId = tid;
+        const titleText = topic.name || 'Untitled';
+        btn.setAttribute(
+          'aria-label',
+          'Jump to ' + titleText + ' — ' + ragLabel + (snip ? ': ' + snip : '')
+        );
+        btn.title = titleText + ' · ' + ragLabel;
+        const ragClass = rag ? ('rag-' + rag.toLowerCase()) : 'rag-none';
+        btn.innerHTML =
+          '<span class="weekly-attention-name">' + escapeHtml(titleText) + '</span>' +
+          '<span class="weekly-attention-sep" aria-hidden="true"> — </span>' +
+          '<span class="weekly-attention-rag ' + ragClass + '">' + escapeHtml(ragLabel) + '</span>' +
+          (snip
+            ? '<span class="weekly-attention-sep" aria-hidden="true"> · </span>' +
+              '<span class="weekly-attention-snip">' + escapeHtml(snip) + '</span>'
+            : '');
+        btn.addEventListener('click', () => {
+          const target = document.getElementById('topic-' + tid);
+          if (!target) return;
+          const railBtn = Array.prototype.find.call(
+            document.querySelectorAll('.jump-rail-item'),
+            (el) => el.dataset.topicId === tid
+          );
+          if (railBtn) {
+            document.querySelectorAll('.jump-rail-item').forEach((el) => {
+              el.classList.toggle('is-active', el === railBtn);
+            });
+          }
+          lockJumpRailUntilScrollEnds(tid);
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        li.appendChild(btn);
+        list.appendChild(li);
+      }
+      attention.appendChild(list);
+      front.appendChild(attention);
+    }
+    app.appendChild(front);
 
     const layout = document.createElement('div');
     layout.className = 'weekly-layout';
@@ -1605,10 +1763,12 @@ async function showWeekly(initialEnding) {
       btn.addEventListener('click', () => {
         const target = document.getElementById('topic-' + tid);
         if (!target) return;
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        /* Set active immediately and lock IO so mid-scroll intersections cannot overwrite it */
         railList.querySelectorAll('.jump-rail-item').forEach((el) => {
           el.classList.toggle('is-active', el === btn);
         });
+        lockJumpRailUntilScrollEnds(tid);
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
       railList.appendChild(btn);
     }
@@ -1767,6 +1927,14 @@ async function showWeekly(initialEnding) {
         }
         if (!bestId) return;
         const activeTid = bestId.replace(/^topic-/, '');
+        /* While locked: keep click-set active until target is the IO winner (or scrollend/timeout) */
+        if (jumpRailScrollLock) {
+          if (jumpRailLockedTopicId && activeTid === jumpRailLockedTopicId) {
+            clearJumpRailScrollLock();
+          } else {
+            return;
+          }
+        }
         railItems.forEach((el) => {
           el.classList.toggle('is-active', el.dataset.topicId === activeTid);
         });
