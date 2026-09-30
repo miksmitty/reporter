@@ -298,9 +298,9 @@ const MIME = {
   '.woff2': 'font/woff2'
 };
 
-function notFound(req, res) {
-  console.log(`404 ${req.method} ${req.url}`);
-  sendError(res, 404, `Not found: ${req.method} ${req.url}`);
+function notFound(req, res, why) {
+  console.log(`404 ${req.method} ${req.url}${why ? ' - ' + why : ''}`);
+  sendError(res, 404, `Not found: ${req.method} ${req.url}${why ? ' - ' + why : ''}`);
 }
 
 function serveStatic(req, res, urlPath, searchParams) {
@@ -321,7 +321,7 @@ function serveStatic(req, res, urlPath, searchParams) {
   fs.readFile(filePath, (err0, data0) => {
     if (!err0) return respond(filePath, data0);
     fs.readFile(byName, (err, data) => {
-      if (err) return notFound(req, res);
+      if (err) return notFound(req, res, `couldn't read ${byName} (${err.code})`);
       respond(byName, data);
     });
   });
@@ -790,6 +790,10 @@ const server = http.createServer(async (req, res) => {
 ensureKeyDatesFile();
 
 // No host given, so it listens on both IPv4 and IPv6 (a proxy may reach it as localhost -> ::1).
+for (const f of ['index.html', 'app.js', 'styles.css', 'theme.js', 'png.js']) {
+  if (!fs.existsSync(path.join(PUBLIC_DIR, f))) console.error(`WARNING: missing ${path.join(PUBLIC_DIR, f)} - copy the whole public folder next to server.js`);
+}
+
 server.listen(PORT, () => {
-  console.log(`reporter running at http://localhost:${PORT}`);
+  console.log(`reporter running at http://localhost:${PORT} (serving ${PUBLIC_DIR}, data in ${DATA_DIR})`);
 });
