@@ -13,17 +13,22 @@ const DATA_DIR = path.join(ROOT, 'data');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const TOPICS_FILE = path.join(DATA_DIR, 'topics.csv');
 const REPORTS_FILE = path.join(DATA_DIR, 'reports.csv');
+const KEY_DATES_FILE = path.join(DATA_DIR, 'key_dates.csv');
 
 const TOPIC_HEADERS = [
-  'id', 'name', 'cadence', 'owner', 'active', 'sort_order', 'created_at', 'updated_at'
+  'id', 'name', 'description', 'owner', 'business_unit', 'cadence',
+  'active', 'sort_order', 'created_at', 'updated_at'
 ];
 const REPORT_HEADERS = [
   'id', 'topic_id', 'period_start', 'period_end', 'exec_summary', 'achievements',
   'next_steps', 'rag', 'trend', 'gtg_plan', 'created_at', 'updated_at'
 ];
+const KEY_DATE_HEADERS = [
+  'id', 'topic_id', 'date', 'description', 'created_at', 'updated_at'
+];
 
 const VALID_CADENCES = new Set(['weekly', 'fortnightly', 'monthly']);
-const VALID_RAG = new Set(['Red', 'Amber', 'Green']);
+const VALID_RAG = new Set(['Red', 'Amber', 'Green', 'Blue']);
 const VALID_TREND = new Set(['Improving', 'Stable', 'Declining']);
 
 // ── CSV helpers (RFC 4180-ish, multiline-safe) ──────────────────────────────
@@ -133,6 +138,9 @@ function nowIso() {
 function loadTopics() {
   return readCsv(TOPICS_FILE).map((t) => ({
     ...t,
+    description: t.description != null ? String(t.description) : '',
+    business_unit: t.business_unit != null ? String(t.business_unit) : '',
+    owner: t.owner != null ? String(t.owner) : '',
     active: t.active === 'true' || t.active === true,
     sort_order: Number(t.sort_order) || 0
   }));
@@ -156,6 +164,36 @@ function loadReports() {
 
 function saveReports(reports) {
   writeCsv(REPORTS_FILE, REPORT_HEADERS, reports);
+}
+
+function ensureKeyDatesFile() {
+  if (!fs.existsSync(KEY_DATES_FILE)) {
+    writeCsv(KEY_DATES_FILE, KEY_DATE_HEADERS, []);
+  }
+}
+
+function loadKeyDates() {
+  ensureKeyDatesFile();
+  return readCsv(KEY_DATES_FILE).map((k) => ({
+    ...k,
+    description: k.description != null ? String(k.description) : '',
+    date: k.date != null ? String(k.date).trim() : ''
+  }));
+}
+
+function saveKeyDates(rows) {
+  ensureKeyDatesFile();
+  writeCsv(KEY_DATES_FILE, KEY_DATE_HEADERS, rows);
+}
+
+function keyDatesForTopic(topicId) {
+  return loadKeyDates()
+    .filter((k) => k.topic_id === topicId)
+    .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.created_at || '').localeCompare(b.created_at || ''));
+}
+
+function rollingWeekFridays(endingFriday) {
+  return [-28, -21, -14, -7, 0, 7, 14, 21].map((d) => addDaysIso(endingFriday, d));
 }
 
 function reportsForTopic(topicId) {
@@ -239,7 +277,7 @@ const MIME = {
   '.woff2': 'font/woff2'
 };
 
-function serveStatic(req, res, urlPath) {
+function serveStatic(req, res, urlPath, searchParams) {
   let rel = urlPath === '/' ? '/index.html' : urlPath;
   rel = decodeURIComponent(rel.split('?')[0]);
   if (rel.includes('..')) {
@@ -257,9 +295,104 @@ function serveStatic(req, res, urlPath) {
       return;
     }
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    const base = path.basename(filePath).toLowerCase();
+    const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+    // HTML / index must never stick on a stale shell with old ?v= (Ana caveat)
+    if (ext === '.html' || base === 'index.html') {
+      headers['Cache-Control'] = 'no-cache, must-revalidate';
+    } else if (searchParams && searchParams.get('v')) {
+      // Fingerprinted assets (?v= bump on ship): long-lived / immutable
+      headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+    } else {
+      headers['Cache-Control'] = 'no-cache';
+    }
+    res.writeHead(200, headers);
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
     res.end(data);
   });
+}
+
+function addDaysIso(dateStr, days) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
+
+function todayUTC() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function utcDow(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+/** Snap to Friday on or before date (week-ending Friday). */
+function fridayOnOrBefore(dateStr) {
+  const dow = utcDow(dateStr);
+  const back = (dow + 2) % 7;
+  return addDaysIso(dateStr, -back);
+}
+
+function mondayOfWeekEnding(fridayStr) {
+  return addDaysIso(fridayStr, -4);
+}
+
+/** Week-ending Friday for the Mon–Fri week that contains dateStr (Sat/Sun → previous Fri). */
+function weekEndingFridayContaining(dateStr) {
+  const dow = utcDow(dateStr); // 0 Sun … 5 Fri … 6 Sat
+  if (dow === 0) return addDaysIso(dateStr, -2);
+  if (dow === 6) return addDaysIso(dateStr, -1);
+  return addDaysIso(dateStr, 5 - dow);
+}
+
+function weeklyBundle(weekEnding) {
+  const friday = weekEndingFridayContaining(weekEnding || todayUTC());
+  const monday = mondayOfWeekEnding(friday);
+  const week_fridays = rollingWeekFridays(friday);
+  const topics = loadTopics()
+    .filter((t) => t.active !== false)
+    .slice()
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || (a.name || '').localeCompare(b.name || ''));
+  const allReports = loadReports();
+  const allKeyDates = loadKeyDates();
+  const items = [];
+  for (const topic of topics) {
+    const matches = allReports
+      .filter((r) => {
+        if (r.topic_id !== topic.id || !r.period_end) return false;
+        return weekEndingFridayContaining(r.period_end) === friday;
+      })
+      .sort((a, b) => {
+        const ca = (b.created_at || '').localeCompare(a.created_at || '');
+        if (ca !== 0) return ca;
+        return (b.period_end || '').localeCompare(a.period_end || '');
+      });
+    if (!matches.length) continue;
+    const key_dates = allKeyDates
+      .filter((k) => k.topic_id === topic.id)
+      .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.created_at || '').localeCompare(b.created_at || ''));
+    items.push({ topic, report: matches[0], key_dates });
+  }
+  const weekSet = new Set();
+  for (const r of allReports) {
+    if (!r.period_end) continue;
+    weekSet.add(weekEndingFridayContaining(r.period_end));
+  }
+  const available_weeks = Array.from(weekSet).sort((a, b) => b.localeCompare(a));
+
+  return {
+    week_ending: friday,
+    period_start: monday,
+    period_end: friday,
+    week_fridays,
+    available_weeks,
+    items
+  };
 }
 
 function stripHtml(html) {
@@ -272,11 +405,19 @@ function isEmptyRich(html) {
 
 // ── API handlers ────────────────────────────────────────────────────────────
 
-async function handleApi(req, res, pathname) {
+async function handleApi(req, res, pathname, url) {
   const method = req.method;
 
   if (pathname === '/api/health' && method === 'GET') {
     return sendJson(res, 200, { ok: true, service: 'reporter', time: nowIso() });
+  }
+
+  if (pathname === '/api/weekly' && method === 'GET') {
+    const ending = (url.searchParams.get('ending') || '').trim() || todayUTC();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ending)) {
+      return sendError(res, 400, 'ending must be YYYY-MM-DD');
+    }
+    return sendJson(res, 200, weeklyBundle(ending));
   }
 
   if (pathname === '/api/topics' && method === 'GET') {
@@ -288,6 +429,8 @@ async function handleApi(req, res, pathname) {
     const name = (body.name || '').trim();
     const cadence = (body.cadence || '').trim();
     const owner = (body.owner || '').trim();
+    const description = (body.description || '').trim();
+    const business_unit = (body.business_unit || '').trim();
     if (!name) return sendError(res, 400, 'name is required');
     if (!VALID_CADENCES.has(cadence)) {
       return sendError(res, 400, 'cadence must be weekly, fortnightly, or monthly');
@@ -298,8 +441,10 @@ async function handleApi(req, res, pathname) {
     const topic = {
       id: randomUUID(),
       name,
-      cadence,
+      description,
       owner,
+      business_unit,
+      cadence,
       active: true,
       sort_order: maxSort + 1,
       created_at: ts,
@@ -330,6 +475,8 @@ async function handleApi(req, res, pathname) {
       t.cadence = body.cadence;
     }
     if (body.owner !== undefined) t.owner = String(body.owner).trim();
+    if (body.description !== undefined) t.description = String(body.description).trim();
+    if (body.business_unit !== undefined) t.business_unit = String(body.business_unit).trim();
     if (body.active !== undefined) t.active = Boolean(body.active);
     if (body.sort_order !== undefined) t.sort_order = Number(body.sort_order) || 0;
     t.updated_at = nowIso();
@@ -363,13 +510,13 @@ async function handleApi(req, res, pathname) {
     if (!period_start || !period_end) {
       return sendError(res, 400, 'period_start and period_end are required');
     }
-    if (!VALID_RAG.has(rag)) return sendError(res, 400, 'rag must be Red, Amber, or Green');
+    if (!VALID_RAG.has(rag)) return sendError(res, 400, 'rag must be Red, Amber, Green, or Blue');
     if (!VALID_TREND.has(trend)) {
       return sendError(res, 400, 'trend must be Improving, Stable, or Declining');
     }
     if (isEmptyRich(exec_summary)) return sendError(res, 400, 'exec_summary is required');
-    if (rag !== 'Green' && isEmptyRich(gtg_plan)) {
-      return sendError(res, 400, 'gtg_plan is required when RAG is not Green');
+    if (rag !== 'Green' && rag !== 'Blue' && isEmptyRich(gtg_plan)) {
+      return sendError(res, 400, 'gtg_plan is required when RAG is Red or Amber');
     }
 
     const ts = nowIso();
@@ -383,7 +530,7 @@ async function handleApi(req, res, pathname) {
       next_steps,
       rag,
       trend,
-      gtg_plan: rag === 'Green' ? '' : gtg_plan,
+      gtg_plan: (rag === 'Green' || rag === 'Blue') ? '' : gtg_plan,
       created_at: ts,
       updated_at: ts
     };
@@ -407,6 +554,94 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, latest);
   }
 
+  // GET single topic (with key_dates)
+  if (topicMatch && method === 'GET') {
+    const id = decodeURIComponent(topicMatch[1]);
+    const topics = loadTopics();
+    const t = topics.find((x) => x.id === id);
+    if (!t) return sendError(res, 404, 'Topic not found');
+    return sendJson(res, 200, {
+      ...t,
+      latest_report: latestReport(t.id),
+      key_dates: keyDatesForTopic(t.id)
+    });
+  }
+
+  const keyDatesListMatch = pathname.match(/^\/api\/topics\/([^/]+)\/key-dates$/);
+  if (keyDatesListMatch && method === 'GET') {
+    const id = decodeURIComponent(keyDatesListMatch[1]);
+    const topics = loadTopics();
+    if (!topics.find((t) => t.id === id)) return sendError(res, 404, 'Topic not found');
+    return sendJson(res, 200, keyDatesForTopic(id));
+  }
+
+  if (keyDatesListMatch && method === 'POST') {
+    const id = decodeURIComponent(keyDatesListMatch[1]);
+    const topics = loadTopics();
+    if (!topics.find((t) => t.id === id)) return sendError(res, 404, 'Topic not found');
+    const body = await readBody(req);
+    const date = (body.date || '').trim();
+    const description = (body.description || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return sendError(res, 400, 'date must be YYYY-MM-DD');
+    }
+    if (!description) return sendError(res, 400, 'description is required');
+    const ts = nowIso();
+    const row = {
+      id: randomUUID(),
+      topic_id: id,
+      date,
+      description,
+      created_at: ts,
+      updated_at: ts
+    };
+    const rows = loadKeyDates();
+    rows.push(row);
+    saveKeyDates(rows);
+    return sendJson(res, 201, row);
+  }
+
+  const keyDateItemMatch = pathname.match(/^\/api\/topics\/([^/]+)\/key-dates\/([^/]+)$/);
+  if (keyDateItemMatch && method === 'PATCH') {
+    const topicId = decodeURIComponent(keyDateItemMatch[1]);
+    const kdId = decodeURIComponent(keyDateItemMatch[2]);
+    const topics = loadTopics();
+    if (!topics.find((t) => t.id === topicId)) return sendError(res, 404, 'Topic not found');
+    const body = await readBody(req);
+    const rows = loadKeyDates();
+    const idx = rows.findIndex((k) => k.id === kdId && k.topic_id === topicId);
+    if (idx === -1) return sendError(res, 404, 'Key date not found');
+    const row = rows[idx];
+    if (body.date !== undefined) {
+      const date = String(body.date).trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return sendError(res, 400, 'date must be YYYY-MM-DD');
+      }
+      row.date = date;
+    }
+    if (body.description !== undefined) {
+      const description = String(body.description).trim();
+      if (!description) return sendError(res, 400, 'description cannot be empty');
+      row.description = description;
+    }
+    row.updated_at = nowIso();
+    rows[idx] = row;
+    saveKeyDates(rows);
+    return sendJson(res, 200, row);
+  }
+
+  if (keyDateItemMatch && method === 'DELETE') {
+    const topicId = decodeURIComponent(keyDateItemMatch[1]);
+    const kdId = decodeURIComponent(keyDateItemMatch[2]);
+    const topics = loadTopics();
+    if (!topics.find((t) => t.id === topicId)) return sendError(res, 404, 'Topic not found');
+    const rows = loadKeyDates();
+    const next = rows.filter((k) => !(k.id === kdId && k.topic_id === topicId));
+    if (next.length === rows.length) return sendError(res, 404, 'Key date not found');
+    saveKeyDates(next);
+    return sendJson(res, 200, { ok: true });
+  }
+
   sendError(res, 404, 'Not found');
 }
 
@@ -419,12 +654,12 @@ const server = http.createServer(async (req, res) => {
     const pathname = url.pathname;
 
     if (pathname.startsWith('/api/')) {
-      await handleApi(req, res, pathname);
+      await handleApi(req, res, pathname, url);
       return;
     }
 
     if (req.method === 'GET' || req.method === 'HEAD') {
-      serveStatic(req, res, pathname);
+      serveStatic(req, res, pathname, url.searchParams);
       return;
     }
 
@@ -434,6 +669,8 @@ const server = http.createServer(async (req, res) => {
     sendError(res, status, err.message || 'Internal server error');
   }
 });
+
+ensureKeyDatesFile();
 
 server.listen(PORT, HOST, () => {
   console.log(`reporter listening on http://${HOST}:${PORT}`);

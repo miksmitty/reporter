@@ -1,6 +1,8 @@
-id,name,cadence,owner,active,sort_order,created_at,updated_at
-7fc54606-2f7c-4719-b69b-ad208d9e32b6,Delivery,weekly,A. Chen,true,1,2026-09-15T21:28:17.404Z,2026-09-29T21:29:29.037Z
-9a9ff252-7e39-44ce-b5f3-d66e78ce00bc,Risk & Controls,fortnightly,B. Okonkwo,true,2,2026-09-15T21:28:17.404Z,2026-09-22T21:28:17.404Z
-2b6c7405-8829-4829-819d-03af96b92d62,Stakeholder,weekly,C. Patel,true,3,2026-09-15T21:28:17.404Z,2026-09-22T21:28:17.404Z
-e33ab066-641f-4c09-a1db-c6eb9919dc42,Resourcing,monthly,D. Müller,true,4,2026-09-15T21:28:17.404Z,2026-09-22T21:28:17.404Z
-814747bb-8ca6-4541-b7d6-9e16ed5e3c93,Tech,fortnightly,E. Santos,true,5,2026-09-15T21:28:17.404Z,2026-09-22T21:28:17.404Z
+id,name,description,owner,business_unit,cadence,active,sort_order,created_at,updated_at
+82b7fcc6-e139-4ed2-a9fe-dbd449a5fbda,Claims triage assistant,"LLM-assisted triage of inbound insurance claims to suggest severity band, next action, and routing to the right queue.",A. Chen,Claims,weekly,true,1,2026-08-01T10:00:00.000Z,2026-09-29T22:09:49.833Z
+1985b0d0-954a-4be9-8fad-020a0dd24675,Policy Wording Q&A,Retrieval-augmented chatbot for brokers and ops to answer questions grounded in approved policy wordings.,B. Okonkwo,Underwriting,weekly,true,2,2026-08-05T10:00:00.000Z,2026-09-29T21:55:00.000Z
+255fe1c8-b5a4-4d01-a805-3d285bd54985,Fraud signal summariser,Summarises multi-source fraud indicators into an investigator brief with confidence and recommended checks.,C. Patel,Financial Crime,fortnightly,true,3,2026-08-10T10:00:00.000Z,2026-09-29T22:09:49.834Z
+17da0cc9-9ccf-409c-87da-82fc468f195d,Meeting minutes → actions,"Turns recorded steering-board audio/notes into structured minutes, owners, and due dates in the PMO tracker.",D. Müller,PMO,weekly,true,4,2026-08-12T10:00:00.000Z,2026-09-29T21:55:00.000Z
+f228e5e9-348e-4134-8b04-d230b87b35e9,Customer email draft assist,Generates first-draft complaint and renewal emails in brand voice for agent review before send.,E. Hughes,Customer Experience,weekly,true,5,2026-08-15T10:00:00.000Z,2026-09-29T21:55:00.000Z
+0a867838-5ae5-4e55-b4a0-86e3183837ff,Knowledge base rewriter,"Rewrites legacy intranet articles into short, searchable how-tos with owner and review cadence.",F. Rahman,IT Service,monthly,true,6,2026-08-20T10:00:00.000Z,2026-09-29T21:55:00.000Z
+d64f4569-0450-4d5e-a10c-368722ad0d5f,Renewal pricing copilot,AI draft of renewal price narratives and exception flags for underwriter review before quote issue.,G. Singh,Pricing,weekly,true,7,2026-08-22T10:00:00.000Z,2026-09-29T22:09:40.424Z
