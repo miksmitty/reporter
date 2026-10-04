@@ -3,7 +3,9 @@
 const app = document.getElementById('app');
 const toastHost = document.getElementById('toast-host');
 
-let pendingTopicFilter = null;
+let pendingTopicFilter = null; // { rag, category } handed from the dashboard to the Topics list
+let ovCategory = ''; // dashboard category scope ('' = all, 'none' = uncategorised)
+let ragFocus = ''; // dashboard legend highlight
 
 function setNav(name) {
   document.querySelectorAll('.nav-item').forEach((a) => {
@@ -337,7 +339,8 @@ async function showOverview() {
   setHash('#overview');
   app.innerHTML = '<div class="loading">Loading overview…</div>';
   try {
-    const [topics, dash] = await Promise.all([api('/api/topics'), api('/api/dashboard').catch(() => null)]);
+    const q = ovCategory ? '?category=' + encodeURIComponent(ovCategory) : '';
+    const [topics, dash] = await Promise.all([api('/api/topics'), api('/api/dashboard' + q).catch(() => null)]);
     renderOverview(topics, dash);
   } catch (err) {
     app.innerHTML = `<div class="empty-state">Failed to load: ${escapeHtml(err.message)}</div>`;
@@ -345,7 +348,8 @@ async function showOverview() {
 }
 
 function renderOverview(topics, dash) {
-  const active = topics.filter((t) => t.active !== false);
+  const active = topics.filter((t) => t.active !== false &&
+    (!ovCategory || (ovCategory === 'none' ? !t.category : t.category === ovCategory)));
   const counts = { Red: 0, Amber: 0, Green: 0, Blue: 0, none: 0 };
   for (const t of active) {
     const r = t.latest_report && t.latest_report.rag;
@@ -376,7 +380,19 @@ function renderOverview(topics, dash) {
   app.innerHTML = '';
   const hero = document.createElement('div');
   hero.className = 'ov-hero';
-  hero.innerHTML = `<div><h1>${greet}</h1><p>${escapeHtml(nowLabel)} · Week ending ${escapeHtml(formatDate(ending))}</p></div>`;
+  hero.innerHTML = `<div><h1>${greet}</h1><p>${escapeHtml(nowLabel)} · Week ending ${escapeHtml(formatDate(ending))}</p></div>
+    <div class="ov-controls">
+      <div class="seg-control" role="group" aria-label="Scope by category">
+        ${[['', 'All'], ...CATEGORIES.map((c) => [c, c])].map(([v, l]) =>
+          `<button type="button" data-cat="${escapeHtml(v)}" aria-pressed="${ovCategory === v}">${escapeHtml(l)}</button>`).join('')}
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" id="ov-refresh" title="Reload the latest data">↻ Refresh</button>
+    </div>`;
+  hero.querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => {
+    ovCategory = b.dataset.cat;
+    showOverview();
+  }));
+  hero.querySelector('#ov-refresh').addEventListener('click', () => { showOverview(); toast('Dashboard refreshed'); });
   app.appendChild(hero);
 
   const tiles = document.createElement('div');
@@ -394,7 +410,8 @@ function renderOverview(topics, dash) {
     b.type = 'button';
     b.className = 'ov-tile ' + cls;
     b.innerHTML = `<b>${n}</b><span>${escapeHtml(label)}</span>`;
-    b.addEventListener('click', () => { pendingTopicFilter = filter; showHome(); });
+    b.title = `Show ${label.toLowerCase()} in the topic list`;
+    b.addEventListener('click', () => { pendingTopicFilter = { rag: filter, category: ovCategory }; showHome(); });
     tiles.appendChild(b);
   }
   app.appendChild(tiles);
@@ -464,9 +481,27 @@ const RAG_ORDER = ['Red', 'Amber', 'Green', 'Blue'];
 const RAG_LABEL = { Red: 'Red', Amber: 'Amber', Green: 'Green', Blue: 'Complete' };
 
 function ragLegend() {
-  return '<div class="dash-legend" aria-hidden="true">' + RAG_ORDER.map((r) =>
-    `<span><i class="dash-sw rag-${r}"></i>${RAG_LABEL[r]}</span>`).join('') + '</div>';
+  return '<div class="dash-legend">' + RAG_ORDER.map((r) =>
+    `<button type="button" class="dash-leg" data-focus="${r}" aria-pressed="${ragFocus === r}" title="Highlight ${RAG_LABEL[r]} across the charts"><i class="dash-sw rag-${r}"></i>${RAG_LABEL[r]}</button>`).join('') + '</div>';
 }
+
+/* One shared tooltip for [data-tip] elements. */
+const tipEl = document.createElement('div');
+tipEl.className = 'dash-tip';
+tipEl.setAttribute('role', 'tooltip');
+document.body.appendChild(tipEl);
+function placeTip(target) {
+  tipEl.textContent = target.dataset.tip;
+  tipEl.classList.add('on');
+  const r = target.getBoundingClientRect();
+  const w = tipEl.offsetWidth;
+  tipEl.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+  tipEl.style.top = Math.max(8, r.top - tipEl.offsetHeight - 8) + 'px';
+}
+document.addEventListener('mouseover', (e) => { const t = e.target.closest && e.target.closest('[data-tip]'); if (t) placeTip(t); });
+document.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('[data-tip]')) tipEl.classList.remove('on'); });
+document.addEventListener('focusin', (e) => { const t = e.target.closest && e.target.closest('[data-tip]'); if (t) placeTip(t); });
+document.addEventListener('focusout', () => tipEl.classList.remove('on'));
 
 function shortDate(iso) {
   return new Date(iso + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
@@ -480,16 +515,17 @@ function renderDashboardCharts(dash, active) {
   const max = Math.max(1, ...dash.trend.map((w) => w.total));
   const cols = dash.trend.map((w) => {
     const segs = RAG_ORDER.filter((r) => w[r] > 0).map((r) =>
-      `<div class="dash-seg rag-${r}" style="flex:${w[r]}" title="${RAG_LABEL[r]}: ${w[r]}"></div>`).join('');
+      `<div class="dash-seg rag-${r}" data-rag="${r}" style="flex:${w[r]}" data-tip="${RAG_LABEL[r]}: ${w[r]}"></div>`).join('');
     const tip = `Week ending ${formatDate(w.week_ending)}: ` + (RAG_ORDER.filter((r) => w[r]).map((r) => `${w[r]} ${RAG_LABEL[r]}`).join(', ') || 'no reports');
-    return `<div class="dash-col" title="${escapeHtml(tip)}" role="img" aria-label="${escapeHtml(tip)}">
+    return `<button type="button" class="dash-col" data-week="${w.week_ending}" aria-label="${escapeHtml(tip)} — open weekly pack">
       <span class="dash-col-n">${w.total || ''}</span>
       <div class="dash-stack" style="height:${(w.total / max) * 100}%">${segs}</div>
-      <span class="dash-col-x">${shortDate(w.week_ending)}</span></div>`;
+      <span class="dash-col-x">${shortDate(w.week_ending)}</span></button>`;
   }).join('');
   const trendCard = document.createElement('section');
   trendCard.className = 'ov-card dash-trend';
-  trendCard.innerHTML = `<h2>Status by week<small>Last 8 weeks · topics reported</small></h2>${ragLegend()}<div class="dash-cols">${cols}</div>`;
+  trendCard.innerHTML = `<h2>Status by week<small>Last 8 weeks · click a week to open its pack</small></h2>${ragLegend()}<div class="dash-cols">${cols}</div>`;
+  trendCard.querySelectorAll('[data-week]').forEach((b) => b.addEventListener('click', () => { location.hash = '#weekly=' + b.dataset.week; }));
   wrap.appendChild(trendCard);
 
   // 2. By category (horizontal stacked bars)
@@ -500,14 +536,17 @@ function renderDashboardCharts(dash, active) {
     const d = dash.categories[c];
     const total = RAG_ORDER.concat('none').reduce((n, k) => n + d[k], 0);
     const segs = RAG_ORDER.concat('none').filter((k) => d[k] > 0).map((k) =>
-      `<div class="dash-seg rag-${k}" style="flex:${d[k]}" title="${k === 'none' ? 'No report' : RAG_LABEL[k]}: ${d[k]}"></div>`).join('');
-    return `<div class="dash-hrow"><span class="dash-hlabel">${escapeHtml(c)}</span>
+      `<button type="button" class="dash-seg rag-${k}" data-rag="${k}" data-cat="${escapeHtml(c)}" data-fkey="${k}" style="flex:${d[k]}" data-tip="${escapeHtml(c)} · ${k === 'none' ? 'No report' : RAG_LABEL[k]}: ${d[k]}" aria-label="${escapeHtml(c)}, ${k === 'none' ? 'No report' : RAG_LABEL[k]}: ${d[k]}"></button>`).join('');
+    return `<div class="dash-hrow"><button type="button" class="dash-hlabel" data-cat="${escapeHtml(c)}" title="Show ${escapeHtml(c)} topics">${escapeHtml(c)}</button>
       <div class="dash-hbar"><div class="dash-hstack" style="width:${(total / catMax) * 100}%">${segs}</div></div>
       <span class="dash-hn">${total}</span></div>`;
   }).join('');
   const catCard = document.createElement('section');
   catCard.className = 'ov-card';
-  catCard.innerHTML = `<h2>By category<small>Current status</small></h2>${ragLegend()}${catRows || '<p class="ov-empty">No topics yet.</p>'}`;
+  catCard.innerHTML = `<h2>By category<small>Current status · click to drill in</small></h2>${ragLegend()}${catRows || '<p class="ov-empty">No topics yet.</p>'}`;
+  const drill = (c, rag) => { pendingTopicFilter = { rag: rag || '', category: c === 'Uncategorised' ? 'none' : c }; showHome(); };
+  catCard.querySelectorAll('.dash-seg[data-cat]').forEach((b) => b.addEventListener('click', () => drill(b.dataset.cat, b.dataset.fkey)));
+  catCard.querySelectorAll('.dash-hlabel').forEach((b) => b.addEventListener('click', () => drill(b.dataset.cat, '')));
   wrap.appendChild(catCard);
 
   // 3. Reporting schedule: overdue + next 14 days
@@ -553,6 +592,13 @@ function renderDashboardCharts(dash, active) {
     mov.appendChild(ul);
   }
   wrap.appendChild(mov);
+
+  wrap.dataset.focus = ragFocus;
+  wrap.querySelectorAll('.dash-leg').forEach((b) => b.addEventListener('click', () => {
+    ragFocus = ragFocus === b.dataset.focus ? '' : b.dataset.focus;
+    wrap.dataset.focus = ragFocus;
+    wrap.querySelectorAll('.dash-leg').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.focus === ragFocus)));
+  }));
   return wrap;
 }
 
@@ -752,12 +798,13 @@ function renderHome(topics) {
 
   const qInput = toolbar.querySelector('#topic-filter-q');
   const ragFilter = toolbar.querySelector('#topic-filter-rag');
-  if (pendingTopicFilter) {
-    ragFilter.value = pendingTopicFilter;
-    pendingTopicFilter = null;
-  }
   const cadenceFilter = toolbar.querySelector('#topic-filter-cadence');
   const categoryFilter = toolbar.querySelector('#topic-filter-category');
+  if (pendingTopicFilter) {
+    ragFilter.value = pendingTopicFilter.rag || '';
+    categoryFilter.value = pendingTopicFilter.category || '';
+    pendingTopicFilter = null;
+  }
   const sortSelect = toolbar.querySelector('#topic-sort');
 
   function filteredSorted() {

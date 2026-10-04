@@ -2059,7 +2059,7 @@ select {
 .rag-Blue { background: var(--rag-blue-solid); }
 .rag-none { background: var(--border-strong); }
 .dash-cols { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 0.6rem; height: 11rem; align-items: end; padding-bottom: 0.5rem; }
-.dash-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 0.25rem; min-width: 0; }
+.dash-col { background: none; border: 0; font: inherit; color: inherit; cursor: pointer; border-radius: 6px; padding: 0.2rem 0; transition: background 0.12s; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 0.25rem; min-width: 0; }
 .dash-col-n { font-size: 0.78rem; color: var(--text-muted); font-variant-numeric: tabular-nums; min-height: 1em; }
 .dash-col-x { font-size: 0.74rem; color: var(--text-faint); white-space: nowrap; }
 .dash-stack { width: min(100%, 3.2rem); display: flex; flex-direction: column; gap: 2px; min-height: 0; flex: 0 1 auto; }
@@ -2109,3 +2109,28 @@ select {
   .cal-day { min-height: 0; flex-direction: column; border-bottom: 1px solid var(--border); }
   .cal-num-m { display: inline; }
 }
+
+/* Dashboard interactivity */
+.ov-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.seg-control { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 999px; overflow: hidden; background: var(--bg-elev); }
+.seg-control button { font: inherit; font-size: 0.82rem; padding: 0.3rem 0.85rem; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; }
+.seg-control button + button { border-left: 1px solid var(--border); }
+.seg-control button:hover { background: var(--bg-soft); }
+.seg-control button[aria-pressed="true"] { background: var(--accent); color: var(--accent-contrast); }
+.seg-control button:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+.dash-leg { font: inherit; font-size: 0.8rem; color: var(--text-muted); background: none; border: 1px solid transparent; border-radius: 999px; padding: 0.1rem 0.55rem; display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+.dash-leg:hover { background: var(--bg-soft); }
+.dash-leg[aria-pressed="true"] { border-color: var(--border-strong); background: var(--bg-soft); color: var(--text); font-weight: 600; }
+.dash-leg:focus-visible, .dash-col:focus-visible, .dash-hlabel:focus-visible, button.dash-seg:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.dash-col:hover { background: var(--bg-soft); }
+.dash-col:hover .dash-col-x { color: var(--text); font-weight: 600; }
+button.dash-seg { border: 0; padding: 0; cursor: pointer; }
+.dash-seg { transition: opacity 0.15s, filter 0.15s; }
+.dash-seg:hover { filter: brightness(1.12); }
+.dash-hlabel { font: inherit; font-size: 0.88rem; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+.dash-hlabel:hover { color: var(--brand); text-decoration: underline; }
+.dash:not([data-focus=""]) .dash-seg { opacity: 0.22; }
+.dash[data-focus="Red"] .dash-seg.rag-Red, .dash[data-focus="Amber"] .dash-seg.rag-Amber,
+.dash[data-focus="Green"] .dash-seg.rag-Green, .dash[data-focus="Blue"] .dash-seg.rag-Blue { opacity: 1; }
+.dash-tip { position: fixed; z-index: 100; pointer-events: none; opacity: 0; transition: opacity 0.1s; background: var(--text); color: var(--bg); font-size: 0.78rem; padding: 0.25rem 0.55rem; border-radius: 5px; white-space: nowrap; }
+.dash-tip.on { opacity: 1; }

@@ -536,10 +536,10 @@ function calendarBundle(month) { // YYYY-MM
 
 // ── Dashboard ───────────────────────────────────────────────────────────────
 
-function dashboardBundle() {
+function dashboardBundle(category) {
   const today = todayUTC();
   const thisFriday = weekEndingFridayContaining(today);
-  const topics = loadTopics().filter((t) => t.active !== false);
+  const topics = loadTopics().filter((t) => t.active !== false && (!category || (t.category || '') === (category === 'none' ? '' : category)));
   const allReports = loadReports();
   const byTopic = new Map(topics.map((t) => [t.id, sortedByWeekDesc(allReports.filter((r) => r.topic_id === t.id))]));
   const RAGS = ['Red', 'Amber', 'Green', 'Blue'];
@@ -580,8 +580,9 @@ function dashboardBundle() {
   const cal = calendarBundle(today.slice(0, 7));
   const next = calendarBundle(addDaysIso(`${today.slice(0, 7)}-01`, 32).slice(0, 7));
   const events = [...cal.events, ...next.events].filter((e, i, a) => a.findIndex((x) => x.topic_id === e.topic_id && x.type === e.type && x.date === e.date) === i);
-  const overdue = events.filter((e) => e.type === 'due' && e.status === 'overdue');
-  const upcoming = events.filter((e) => e.date >= today && e.date <= horizon && e.status !== 'submitted');
+  const topicIds = new Set(topics.map((t) => t.id));
+  const overdue = events.filter((e) => topicIds.has(e.topic_id) && e.type === 'due' && e.status === 'overdue');
+  const upcoming = events.filter((e) => topicIds.has(e.topic_id) && e.date >= today && e.date <= horizon && e.status !== 'submitted');
 
   return { today, week_ending: thisFriday, trend, categories, movements: movements.slice(0, 8), overdue, upcoming, prep_lead_days: PREP_LEAD_DAYS };
 }
@@ -639,7 +640,7 @@ async function handleApi(req, res, pathname, url) {
   }
 
   if (pathname === '/api/dashboard' && method === 'GET') {
-    return sendJson(res, 200, dashboardBundle());
+    return sendJson(res, 200, dashboardBundle((url.searchParams.get('category') || '').trim()));
   }
 
   if (pathname === '/api/calendar' && method === 'GET') {

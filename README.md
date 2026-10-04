@@ -39,6 +39,7 @@ GTG plan is required when RAG is not Green.
 ## API
 
 - `GET /api/health`
+- `GET /api/dashboard?category=` — overview chart data, optionally scoped to one category (`none` = uncategorised)
 - `GET /api/topics` — topics with `latest_report`
 - `POST /api/topics` — `{name,cadence,owner}`
 - `PATCH /api/topics/:id`
