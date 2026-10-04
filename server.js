@@ -14,6 +14,7 @@ const TOPICS_FILE = path.join(DATA_DIR, 'topics.csv');
 const REPORTS_FILE = path.join(DATA_DIR, 'reports.csv');
 const KEY_DATES_FILE = path.join(DATA_DIR, 'key_dates.csv');
 const COMMENTS_FILE = path.join(DATA_DIR, 'comments.csv');
+const CATEGORIES_FILE = path.join(DATA_DIR, 'categories.csv');
 
 const TOPIC_HEADERS = [
   'id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence',
@@ -33,9 +34,10 @@ const COMMENT_HEADERS = [
 ];
 const VALID_COMMENT_KINDS = new Set(['comment', 'question']);
 
-// What kind of work a topic is. Existing topics saved before this was added have none (shown as
-// Uncategorised) until they're next edited.
-const VALID_CATEGORIES = new Set(['Project', 'POC', 'AI use case']);
+// What kind of work a topic is. Categories are data (data/categories.csv, managed on the Settings
+// page); this seeds the file the first time. Topics with no (or a removed) category show as Uncategorised.
+const CATEGORY_HEADERS = ['id', 'name', 'sort_order'];
+const DEFAULT_CATEGORIES = ['Project', 'POC', 'AI use case'];
 
 // Report calendar: a report covers the Mon-Fri week ending on a Friday and is due on that Friday
 // (weekly), every other Friday (fortnightly) or the last Friday of the month (monthly). Prep starts
@@ -153,13 +155,32 @@ function nowIso() {
 
 // ── Data access ─────────────────────────────────────────────────────────────
 
+function loadCategories() {
+  if (!fs.existsSync(CATEGORIES_FILE)) {
+    saveCategories(DEFAULT_CATEGORIES.map((name, i) => ({ id: randomUUID(), name, sort_order: i + 1 })));
+  }
+  return readCsv(CATEGORIES_FILE)
+    .map((c) => ({ id: c.id, name: String(c.name || '').trim(), sort_order: Number(c.sort_order) || 0 }))
+    .filter((c) => c.name)
+    .sort((a, b) => a.sort_order - b.sort_order);
+}
+
+function saveCategories(list) {
+  writeCsv(CATEGORIES_FILE, CATEGORY_HEADERS, list.map((c, i) => ({ id: c.id, name: c.name, sort_order: String(i + 1) })));
+}
+
+function categoryNames() {
+  return loadCategories().map((c) => c.name);
+}
+
 function loadTopics() {
+  const known = new Set(categoryNames());
   return readCsv(TOPICS_FILE).map((t) => ({
     ...t,
     description: t.description != null ? String(t.description) : '',
     business_unit: t.business_unit != null ? String(t.business_unit) : '',
     owner: t.owner != null ? String(t.owner) : '',
-    category: VALID_CATEGORIES.has(t.category) ? t.category : '',
+    category: known.has(t.category) ? t.category : '',
     active: t.active === 'true' || t.active === true,
     sort_order: Number(t.sort_order) || 0
   }));
@@ -560,7 +581,7 @@ function dashboardBundle(category) {
   }
 
   const categories = {};
-  for (const c of [...VALID_CATEGORIES, '']) categories[c || 'Uncategorised'] = { Red: 0, Amber: 0, Green: 0, Blue: 0, none: 0 };
+  for (const c of [...categoryNames(), '']) categories[c || 'Uncategorised'] = { Red: 0, Amber: 0, Green: 0, Blue: 0, none: 0 };
   const movements = [];
   for (const t of topics) {
     const reps = byTopic.get(t.id);
@@ -639,6 +660,59 @@ async function handleApi(req, res, pathname, url) {
     return sendJson(res, 200, weeklyBundle(ending));
   }
 
+  if (pathname === '/api/categories' && method === 'GET') {
+    const used = {};
+    for (const t of loadTopics()) if (t.category) used[t.category] = (used[t.category] || 0) + 1;
+    return sendJson(res, 200, loadCategories().map((c) => ({ ...c, topic_count: used[c.name] || 0 })));
+  }
+
+  if (pathname === '/api/categories' && method === 'POST') {
+    const body = await readBody(req);
+    const name = String(body.name || '').trim().slice(0, 40);
+    if (!name) return sendError(res, 400, 'name is required');
+    const list = loadCategories();
+    if (list.some((c) => c.name.toLowerCase() === name.toLowerCase())) return sendError(res, 409, 'That category already exists');
+    list.push({ id: randomUUID(), name });
+    saveCategories(list);
+    return sendJson(res, 201, { ok: true });
+  }
+
+  if (pathname === '/api/categories/order' && method === 'POST') {
+    const body = await readBody(req);
+    const list = loadCategories();
+    const ids = Array.isArray(body.ids) ? body.ids : [];
+    const sorted = ids.map((id) => list.find((c) => c.id === id)).filter(Boolean);
+    for (const c of list) if (!sorted.includes(c)) sorted.push(c);
+    saveCategories(sorted);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  const catMatch = pathname.match(/^\/api\/categories\/([^/]+)$/);
+  if (catMatch && (method === 'PATCH' || method === 'DELETE')) {
+    const id = decodeURIComponent(catMatch[1]);
+    const list = loadCategories();
+    const cat = list.find((c) => c.id === id);
+    if (!cat) return sendError(res, 404, 'Category not found');
+    // Topics are rewritten from the raw file so the rename/removal carries through to them.
+    const rawTopics = readCsv(TOPICS_FILE);
+    if (method === 'PATCH') {
+      const body = await readBody(req);
+      const name = String(body.name || '').trim().slice(0, 40);
+      if (!name) return sendError(res, 400, 'name is required');
+      if (list.some((c) => c.id !== id && c.name.toLowerCase() === name.toLowerCase())) return sendError(res, 409, 'That category already exists');
+      for (const t of rawTopics) if (t.category === cat.name) t.category = name;
+      cat.name = name;
+    } else {
+      const to = (url.searchParams.get('reassign') || '').trim();
+      if (to && !list.some((c) => c.id !== id && c.name === to)) return sendError(res, 400, 'reassign target not found');
+      for (const t of rawTopics) if (t.category === cat.name) t.category = to;
+      list.splice(list.indexOf(cat), 1);
+    }
+    writeCsv(TOPICS_FILE, TOPIC_HEADERS, rawTopics);
+    saveCategories(list);
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (pathname === '/api/dashboard' && method === 'GET') {
     return sendJson(res, 200, dashboardBundle((url.searchParams.get('category') || '').trim()));
   }
@@ -662,7 +736,7 @@ async function handleApi(req, res, pathname, url) {
     const business_unit = (body.business_unit || '').trim();
     const category = (body.category || '').trim();
     if (!name) return sendError(res, 400, 'name is required');
-    if (!VALID_CATEGORIES.has(category)) return sendError(res, 400, 'category must be Project, POC, or AI use case');
+    if (!categoryNames().includes(category)) return sendError(res, 400, 'Choose a valid category');
     if (!VALID_CADENCES.has(cadence)) {
       return sendError(res, 400, 'cadence must be weekly, fortnightly, or monthly');
     }
@@ -707,7 +781,7 @@ async function handleApi(req, res, pathname, url) {
       t.cadence = body.cadence;
     }
     if (body.category !== undefined) {
-      if (!VALID_CATEGORIES.has(body.category)) return sendError(res, 400, 'category must be Project, POC, or AI use case');
+      if (!categoryNames().includes(body.category)) return sendError(res, 400, 'Choose a valid category');
       t.category = body.category;
     }
     if (body.owner !== undefined) t.owner = String(body.owner).trim();

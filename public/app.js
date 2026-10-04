@@ -29,6 +29,7 @@ document.querySelectorAll('.nav-item').forEach((a) => {
     if (n === 'overview') showOverview();
     else if (n === 'topics') showHome();
     else if (n === 'calendar') showCalendar();
+    else if (n === 'settings') showSettings();
     else showWeekly();
     window.scrollTo(0, 0);
   });
@@ -182,10 +183,22 @@ function ragChip(rag) {
   return `<span class="chip chip-rag-${escapeHtml(rag)}" title="${escapeHtml(rag)}">${escapeHtml(label)}</span>`;
 }
 
-const CATEGORIES = ['Project', 'POC', 'AI use case'];
+// Loaded from /api/categories (managed on the Settings page); never hard-code names here.
+let CATEGORIES = [];
+async function loadCategoryNames() {
+  try { CATEGORIES = (await api('/api/categories')).map((c) => c.name); } catch { /* keep previous list */ }
+}
 
 function categoryTag(c) {
   return `<span class="cat-tag${c ? '' : ' cat-none'}">${escapeHtml(c || 'Uncategorised')}</span>`;
+}
+
+function avatar(name) {
+  const parts = String(name || '').replace(/[^\p{L}\s.]/gu, '').split(/[\s.]+/).filter(Boolean);
+  const ini = parts.length ? (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase() : '?';
+  let h = 0;
+  for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return `<span class="avatar" style="--av:${h}" aria-hidden="true">${escapeHtml(ini)}</span>`;
 }
 
 function cadenceChip(c) {
@@ -602,6 +615,113 @@ function renderDashboardCharts(dash, active) {
   return wrap;
 }
 
+/* ── Settings: categories ─────────────────────────────────────────────────── */
+
+async function showSettings() {
+  setNav('settings');
+  setHash('#settings');
+  app.innerHTML = '<div class="loading">Loading settings…</div>';
+  try {
+    renderSettings(await api('/api/categories'));
+  } catch (err) {
+    app.innerHTML = `<div class="empty-state">Failed to load settings: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderSettings(cats) {
+  CATEGORIES = cats.map((c) => c.name);
+  app.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'page-head';
+  head.innerHTML = `<div><h1>Settings</h1><p>Manage the lists used across the app.</p></div>`;
+  app.appendChild(head);
+
+  const card = document.createElement('section');
+  card.className = 'panel settings-card';
+  card.innerHTML = `
+    <h2 class="settings-title">Categories</h2>
+    <p class="settings-help">What kind of work a topic is. Renaming updates every topic that uses it. Order controls how categories appear in filters and charts.</p>
+    <ul class="cat-list"></ul>
+    <form class="cat-add" autocomplete="off">
+      <label class="sr-only" for="cat-new">New category</label>
+      <input id="cat-new" type="text" maxlength="40" placeholder="Add a category, e.g. Initiative" />
+      <button type="submit" class="btn btn-primary">Add</button>
+    </form>`;
+  app.appendChild(card);
+  const ul = card.querySelector('.cat-list');
+  const refresh = () => showSettings();
+  const run = async (fn, okMsg) => {
+    try { await fn(); if (okMsg) toast(okMsg); await refresh(); } catch (err) { toast(err.message, 'error'); await refresh(); }
+  };
+
+  if (!cats.length) ul.innerHTML = '<li class="cat-empty">No categories yet — add your first below.</li>';
+  cats.forEach((c, i) => {
+    const li = document.createElement('li');
+    li.className = 'cat-row';
+    li.innerHTML = `
+      <div class="cat-move">
+        <button type="button" class="icon-btn" data-up aria-label="Move ${escapeHtml(c.name)} up" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button type="button" class="icon-btn" data-down aria-label="Move ${escapeHtml(c.name)} down" ${i === cats.length - 1 ? 'disabled' : ''}>▼</button>
+      </div>
+      <input class="cat-name" type="text" maxlength="40" value="${escapeHtml(c.name)}" aria-label="Category name" />
+      <span class="cat-count">${c.topic_count} topic${c.topic_count === 1 ? '' : 's'}</span>
+      <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-del>Delete</button>`;
+    const input = li.querySelector('.cat-name');
+    let busy = false;
+    const rename = () => {
+      const v = input.value.trim();
+      if (!v) { input.value = c.name; return; }
+      if (v !== c.name && !busy) { busy = true; run(() => api('/api/categories/' + encodeURIComponent(c.id), { method: 'PATCH', body: JSON.stringify({ name: v }) }), 'Category renamed'); }
+    };
+    input.addEventListener('blur', rename);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') rename();
+      if (e.key === 'Escape') { input.value = c.name; input.blur(); }
+    });
+    const move = (d) => {
+      const ids = cats.map((x) => x.id);
+      ids.splice(i + d, 0, ids.splice(i, 1)[0]);
+      run(() => api('/api/categories/order', { method: 'POST', body: JSON.stringify({ ids }) }));
+    };
+    li.querySelector('[data-up]').addEventListener('click', () => move(-1));
+    li.querySelector('[data-down]').addEventListener('click', () => move(1));
+    li.querySelector('[data-del]').addEventListener('click', () => confirmDeleteCategory(c, cats, run));
+    ul.appendChild(li);
+  });
+
+  card.querySelector('.cat-add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const inp = card.querySelector('#cat-new');
+    const name = inp.value.trim();
+    if (!name) return inp.focus();
+    run(() => api('/api/categories', { method: 'POST', body: JSON.stringify({ name }) }), 'Category added');
+  });
+}
+
+function confirmDeleteCategory(cat, cats, run) {
+  const others = cats.filter((c) => c.id !== cat.id);
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.setAttribute('role', 'dialog');
+  backdrop.setAttribute('aria-modal', 'true');
+  backdrop.innerHTML = `<div class="modal">
+    <h2>Delete “${escapeHtml(cat.name)}”?</h2>
+    ${cat.topic_count ? `<p>${cat.topic_count} topic${cat.topic_count === 1 ? ' uses' : 's use'} this category. Move ${cat.topic_count === 1 ? 'it' : 'them'} to:</p>
+    <div class="field"><select id="cat-reassign"><option value="">Uncategorised</option>${others.map((o) => `<option>${escapeHtml(o.name)}</option>`).join('')}</select></div>` : '<p>No topics use it.</p>'}
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" data-cancel>Cancel</button><button type="button" class="btn btn-primary" data-ok>Delete</button></div></div>`;
+  const close = () => backdrop.remove();
+  backdrop.querySelector('[data-cancel]').addEventListener('click', close);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+  backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  backdrop.querySelector('[data-ok]').addEventListener('click', () => {
+    const sel = backdrop.querySelector('#cat-reassign');
+    close();
+    run(() => api('/api/categories/' + encodeURIComponent(cat.id) + '?reassign=' + encodeURIComponent(sel ? sel.value : ''), { method: 'DELETE' }), 'Category deleted');
+  });
+  document.body.appendChild(backdrop);
+  backdrop.querySelector('[data-ok]').focus();
+}
+
 /* ── Calendar ─────────────────────────────────────────────────────────────── */
 
 let calCategory = '';
@@ -924,7 +1044,7 @@ function renderHome(topics) {
       const snippet = rawSnippet.length > 120 ? rawSnippet.slice(0, 117) + '…' : rawSnippet;
 
       const row = document.createElement('div');
-      row.className = 'topic-list-row';
+      row.className = 'topic-list-row' + (latest && latest.rag ? ' rag-edge-' + latest.rag : '');
       row.setAttribute('role', 'row');
       row.tabIndex = 0;
       const open = () => showTopic(t.id);
@@ -943,8 +1063,9 @@ function renderHome(topics) {
           ${snippet ? `<div class="topic-list-snippet">${escapeHtml(snippet)}</div>` : ''}
         </div>
         <div class="topic-list-owner" role="cell">
-          ${t.owner ? escapeHtml(t.owner) : '—'}
-          ${t.business_unit ? `<span class="topic-list-bu">${escapeHtml(t.business_unit)}</span>` : ''}
+          ${t.owner ? avatar(t.owner) : ''}
+          <span class="owner-text">${t.owner ? escapeHtml(t.owner) : '—'}
+          ${t.business_unit ? `<span class="topic-list-bu">${escapeHtml(t.business_unit)}</span>` : ''}</span>
         </div>
         <div class="topic-list-cadence" role="cell">${cadenceText(t.cadence)}</div>
         <div class="topic-list-status" role="cell">${latest
@@ -2546,7 +2667,9 @@ function createKeyDatesPanel(topic) {
 
 function route() {
   const h = location.hash;
-  if (h.startsWith('#weekly')) {
+  if (h === '#settings') {
+    showSettings();
+  } else if (h.startsWith('#weekly')) {
     const raw = h.startsWith('#weekly=') ? h.slice('#weekly='.length) : '';
     showWeekly(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : undefined);
   } else if (h === '#topics') {
@@ -2569,5 +2692,5 @@ window.addEventListener('keydown', (e) => {
 });
 
 /* boot */
-route();
+loadCategoryNames().then(route);
 

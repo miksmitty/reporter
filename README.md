@@ -28,6 +28,8 @@ CSV files under `data/`:
 | `comments.csv` | id, topic_id, week_ending, kind, author, body, resolved, created_at, updated_at |
 | `reports.csv` | id, topic_id, period_start, period_end, exec_summary, achievements, next_steps, rag, trend, gtg_plan, created_at, updated_at |
 
+`categories.csv` (id, name, sort_order) holds the topic categories. Manage them on the **Settings** page (add, rename, reorder, delete); it is seeded with Project / POC / AI use case on first run. Renaming updates every topic that uses the category; deleting offers to move its topics to another category or to Uncategorised. API: `GET/POST /api/categories`, `PATCH/DELETE /api/categories/:id` (`?reassign=<name>`), `POST /api/categories/order` (`{ids}`).
+
 Narrative fields store HTML. Values are RFC 4180 quoted (including multiline).
 
 Cadence: `weekly` \| `fortnightly` \| `monthly`  
