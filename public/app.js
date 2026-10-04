@@ -26,6 +26,7 @@ document.querySelectorAll('.nav-item').forEach((a) => {
     const n = a.dataset.nav;
     if (n === 'overview') showOverview();
     else if (n === 'topics') showHome();
+    else if (n === 'calendar') showCalendar();
     else showWeekly();
     window.scrollTo(0, 0);
   });
@@ -179,6 +180,12 @@ function ragChip(rag) {
   return `<span class="chip chip-rag-${escapeHtml(rag)}" title="${escapeHtml(rag)}">${escapeHtml(label)}</span>`;
 }
 
+const CATEGORIES = ['Project', 'POC', 'AI use case'];
+
+function categoryTag(c) {
+  return `<span class="cat-tag${c ? '' : ' cat-none'}">${escapeHtml(c || 'Uncategorised')}</span>`;
+}
+
 function cadenceChip(c) {
   return `<span class="chip chip-cadence">${escapeHtml(c)}</span>`;
 }
@@ -330,14 +337,14 @@ async function showOverview() {
   setHash('#overview');
   app.innerHTML = '<div class="loading">Loading overview…</div>';
   try {
-    const topics = await api('/api/topics');
-    renderOverview(topics);
+    const [topics, dash] = await Promise.all([api('/api/topics'), api('/api/dashboard').catch(() => null)]);
+    renderOverview(topics, dash);
   } catch (err) {
     app.innerHTML = `<div class="empty-state">Failed to load: ${escapeHtml(err.message)}</div>`;
   }
 }
 
-function renderOverview(topics) {
+function renderOverview(topics, dash) {
   const active = topics.filter((t) => t.active !== false);
   const counts = { Red: 0, Amber: 0, Green: 0, Blue: 0, none: 0 };
   for (const t of active) {
@@ -391,6 +398,7 @@ function renderOverview(topics) {
     tiles.appendChild(b);
   }
   app.appendChild(tiles);
+  if (dash) app.appendChild(renderDashboardCharts(dash, active));
 
   function topicRow(t, sub) {
     const li = document.createElement('li');
@@ -450,6 +458,200 @@ function renderOverview(topics) {
   app.appendChild(grid);
 }
 
+/* ── Dashboard charts (Overview) ──────────────────────────────────────────── */
+
+const RAG_ORDER = ['Red', 'Amber', 'Green', 'Blue'];
+const RAG_LABEL = { Red: 'Red', Amber: 'Amber', Green: 'Green', Blue: 'Complete' };
+
+function ragLegend() {
+  return '<div class="dash-legend" aria-hidden="true">' + RAG_ORDER.map((r) =>
+    `<span><i class="dash-sw rag-${r}"></i>${RAG_LABEL[r]}</span>`).join('') + '</div>';
+}
+
+function shortDate(iso) {
+  return new Date(iso + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+}
+
+function renderDashboardCharts(dash, active) {
+  const wrap = document.createElement('div');
+  wrap.className = 'dash';
+
+  // 1. RAG mix by week (stacked columns, last 8 weeks)
+  const max = Math.max(1, ...dash.trend.map((w) => w.total));
+  const cols = dash.trend.map((w) => {
+    const segs = RAG_ORDER.filter((r) => w[r] > 0).map((r) =>
+      `<div class="dash-seg rag-${r}" style="flex:${w[r]}" title="${RAG_LABEL[r]}: ${w[r]}"></div>`).join('');
+    const tip = `Week ending ${formatDate(w.week_ending)}: ` + (RAG_ORDER.filter((r) => w[r]).map((r) => `${w[r]} ${RAG_LABEL[r]}`).join(', ') || 'no reports');
+    return `<div class="dash-col" title="${escapeHtml(tip)}" role="img" aria-label="${escapeHtml(tip)}">
+      <span class="dash-col-n">${w.total || ''}</span>
+      <div class="dash-stack" style="height:${(w.total / max) * 100}%">${segs}</div>
+      <span class="dash-col-x">${shortDate(w.week_ending)}</span></div>`;
+  }).join('');
+  const trendCard = document.createElement('section');
+  trendCard.className = 'ov-card dash-trend';
+  trendCard.innerHTML = `<h2>Status by week<small>Last 8 weeks · topics reported</small></h2>${ragLegend()}<div class="dash-cols">${cols}</div>`;
+  wrap.appendChild(trendCard);
+
+  // 2. By category (horizontal stacked bars)
+  const catNames = [...CATEGORIES, 'Uncategorised'].filter((c) => dash.categories[c] &&
+    (c !== 'Uncategorised' || RAG_ORDER.concat('none').some((k) => dash.categories[c][k] > 0)));
+  const catMax = Math.max(1, ...catNames.map((c) => RAG_ORDER.concat('none').reduce((n, k) => n + dash.categories[c][k], 0)));
+  const catRows = catNames.map((c) => {
+    const d = dash.categories[c];
+    const total = RAG_ORDER.concat('none').reduce((n, k) => n + d[k], 0);
+    const segs = RAG_ORDER.concat('none').filter((k) => d[k] > 0).map((k) =>
+      `<div class="dash-seg rag-${k}" style="flex:${d[k]}" title="${k === 'none' ? 'No report' : RAG_LABEL[k]}: ${d[k]}"></div>`).join('');
+    return `<div class="dash-hrow"><span class="dash-hlabel">${escapeHtml(c)}</span>
+      <div class="dash-hbar"><div class="dash-hstack" style="width:${(total / catMax) * 100}%">${segs}</div></div>
+      <span class="dash-hn">${total}</span></div>`;
+  }).join('');
+  const catCard = document.createElement('section');
+  catCard.className = 'ov-card';
+  catCard.innerHTML = `<h2>By category<small>Current status</small></h2>${ragLegend()}${catRows || '<p class="ov-empty">No topics yet.</p>'}`;
+  wrap.appendChild(catCard);
+
+  // 3. Reporting schedule: overdue + next 14 days
+  const sched = document.createElement('section');
+  sched.className = 'ov-card';
+  const items = [
+    ...dash.overdue.map((e) => ({ ...e, tag: 'Overdue', cls: 'overdue' })),
+    ...dash.upcoming.map((e) => ({ ...e, tag: e.type === 'due' ? 'Due' : 'Prep starts', cls: e.type }))
+  ].sort((a, b) => (a.cls === 'overdue' ? 0 : 1) - (b.cls === 'overdue' ? 0 : 1) || a.date.localeCompare(b.date)).slice(0, 8);
+  sched.innerHTML = `<h2>Reporting schedule<small><a href="#calendar" class="dash-link">Calendar →</a></small></h2>`;
+  if (!items.length) sched.insertAdjacentHTML('beforeend', '<p class="ov-empty">Nothing due in the next 14 days.</p>');
+  else {
+    const ul = document.createElement('ul');
+    ul.className = 'ov-list';
+    for (const e of items) {
+      const li = document.createElement('li');
+      li.innerHTML = `<button type="button" class="ov-row"><span class="ov-row-name">${escapeHtml(e.topic_name)}</span>
+        <span class="cal-pill cal-${e.cls}">${e.tag}</span>
+        <span class="ov-row-sub">${escapeHtml(formatDate(e.date))}${e.owner ? ' · ' + escapeHtml(e.owner) : ''}</span></button>`;
+      li.querySelector('button').addEventListener('click', () => showTopic(e.topic_id));
+      ul.appendChild(li);
+    }
+    sched.appendChild(ul);
+  }
+  wrap.appendChild(sched);
+
+  // 4. Movement
+  const mov = document.createElement('section');
+  mov.className = 'ov-card';
+  mov.innerHTML = '<h2>Status changes<small>Latest report vs the one before</small></h2>';
+  if (!dash.movements.length) mov.insertAdjacentHTML('beforeend', '<p class="ov-empty">No status changes yet.</p>');
+  else {
+    const ul = document.createElement('ul');
+    ul.className = 'ov-list';
+    for (const m of dash.movements) {
+      const li = document.createElement('li');
+      li.innerHTML = `<button type="button" class="ov-row"><span class="ov-row-name">${escapeHtml(m.topic_name)}</span>
+        <span class="dash-move dash-${m.direction}">${m.direction === 'worse' ? '▼' : '▲'} ${RAG_LABEL[m.from]} → ${RAG_LABEL[m.to]}</span>
+        <span class="ov-row-sub">Week ending ${escapeHtml(formatDate(m.week_ending))}</span></button>`;
+      li.querySelector('button').addEventListener('click', () => showTopic(m.topic_id));
+      ul.appendChild(li);
+    }
+    mov.appendChild(ul);
+  }
+  wrap.appendChild(mov);
+  return wrap;
+}
+
+/* ── Calendar ─────────────────────────────────────────────────────────────── */
+
+let calCategory = '';
+
+async function showCalendar(month) {
+  setNav('calendar');
+  month = month || todayUTC().slice(0, 7);
+  setHash('#calendar=' + month);
+  app.innerHTML = '<div class="loading">Loading calendar…</div>';
+  try {
+    renderCalendar(await api('/api/calendar?month=' + encodeURIComponent(month)), month);
+  } catch (err) {
+    app.innerHTML = `<div class="empty-state">Failed to load calendar: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function shiftMonth(month, delta) {
+  const [y, m] = month.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return d.toISOString().slice(0, 7);
+}
+
+function renderCalendar(cal, month) {
+  app.innerHTML = '';
+  const label = new Date(month + '-01T00:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const head = document.createElement('div');
+  head.className = 'page-head';
+  head.innerHTML = `
+    <div>
+      <h1>Reporting calendar</h1>
+      <p>When each report is due, and when prep starts (${cal.prep_lead_days} working days before). Click an entry to open the topic.</p>
+    </div>
+    <div class="page-head-actions">
+      <div class="field">
+        <label class="sr-only" for="cal-cat">Category</label>
+        <select id="cal-cat">
+          <option value="">All categories</option>
+          ${CATEGORIES.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="cal-nav">
+        <button type="button" class="btn btn-ghost btn-sm" id="cal-prev" aria-label="Previous month">◀</button>
+        <strong class="cal-month">${escapeHtml(label)}</strong>
+        <button type="button" class="btn btn-ghost btn-sm" id="cal-next" aria-label="Next month">▶</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="cal-today">Today</button>
+      </div>
+    </div>`;
+  app.appendChild(head);
+  head.querySelector('#cal-prev').addEventListener('click', () => showCalendar(shiftMonth(month, -1)));
+  head.querySelector('#cal-next').addEventListener('click', () => showCalendar(shiftMonth(month, 1)));
+  head.querySelector('#cal-today').addEventListener('click', () => showCalendar());
+  const catSel = head.querySelector('#cal-cat');
+  catSel.value = calCategory;
+  catSel.addEventListener('change', () => { calCategory = catSel.value; renderCalendar(cal, month); });
+
+  const legend = document.createElement('div');
+  legend.className = 'cal-legend';
+  legend.innerHTML = `<span><i class="cal-pill cal-prep">Prep</i> prep starts</span><span><i class="cal-pill cal-due">Due</i> report due</span>
+    <span><i class="cal-pill cal-submitted">Done</i> submitted</span><span><i class="cal-pill cal-overdue">Late</i> overdue</span>`;
+  app.appendChild(legend);
+
+  const events = cal.events.filter((e) => !calCategory || e.category === calCategory);
+  const byDate = new Map();
+  for (const e of events) {
+    if (!byDate.has(e.date)) byDate.set(e.date, []);
+    byDate.get(e.date).push(e);
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'cal-grid';
+  for (const d of ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']) {
+    grid.insertAdjacentHTML('beforeend', `<div class="cal-dow">${d}</div>`);
+  }
+  for (let d = cal.grid_from; d <= cal.grid_to; d = addDays(d, 1)) {
+    const inMonth = d.startsWith(month);
+    const evs = byDate.get(d) || [];
+    const cell = document.createElement('div');
+    cell.className = 'cal-day' + (inMonth ? '' : ' cal-out') + (d === cal.today ? ' cal-today' : '') + (evs.length ? '' : ' cal-empty');
+    cell.innerHTML = `<span class="cal-num">${Number(d.slice(8))}<span class="cal-num-m"> ${shortDate(d).split(' ')[1]}</span></span>`;
+    for (const e of evs) {
+      const kind = e.type === 'prep' ? 'prep' : e.status === 'submitted' ? 'submitted' : e.status === 'overdue' ? 'overdue' : 'due';
+      const word = e.type === 'prep' ? 'Prep' : kind === 'submitted' ? 'Done' : kind === 'overdue' ? 'Late' : 'Due';
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `cal-ev cal-${kind}`;
+      b.title = `${e.type === 'prep' ? 'Prep starts' : 'Report due'} · ${e.topic_name}${e.category ? ' · ' + e.category : ''} · ${e.cadence}\nDue ${formatDate(e.due_date)}${e.owner ? ' · ' + e.owner : ''}`;
+      b.innerHTML = `<b>${word}</b> ${escapeHtml(e.topic_name)}`;
+      b.addEventListener('click', () => showTopic(e.topic_id));
+      cell.appendChild(b);
+    }
+    grid.appendChild(cell);
+  }
+  app.appendChild(grid);
+}
+
+
 async function showHome() {
   setNav('topics');
   setHash('#topics');
@@ -505,6 +707,14 @@ function renderHome(topics) {
       </select>
     </div>
     <div class="field">
+      <label class="sr-only" for="topic-filter-category">Filter category</label>
+      <select id="topic-filter-category">
+        <option value="">All categories</option>
+        ${CATEGORIES.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}
+        <option value="none">Uncategorised</option>
+      </select>
+    </div>
+    <div class="field">
       <label class="sr-only" for="topic-filter-cadence">Filter cadence</label>
       <select id="topic-filter-cadence">
         <option value="">All cadence</option>
@@ -547,6 +757,7 @@ function renderHome(topics) {
     pendingTopicFilter = null;
   }
   const cadenceFilter = toolbar.querySelector('#topic-filter-cadence');
+  const categoryFilter = toolbar.querySelector('#topic-filter-category');
   const sortSelect = toolbar.querySelector('#topic-sort');
 
   function filteredSorted() {
@@ -571,6 +782,9 @@ function renderHome(topics) {
     }
     if (cadF) {
       rows = rows.filter((t) => t.cadence === cadF);
+    }
+    if (categoryFilter.value) {
+      rows = rows.filter((t) => (categoryFilter.value === 'none' ? !t.category : t.category === categoryFilter.value));
     }
 
     const sort = sortSelect.value;
@@ -639,6 +853,7 @@ function renderHome(topics) {
         qInput.value = '';
         ragFilter.value = '';
         cadenceFilter.value = '';
+        categoryFilter.value = '';
         sortSelect.value = 'priority-asc';
         paint();
       });
@@ -677,7 +892,7 @@ function renderHome(topics) {
 
       row.innerHTML = `
         <div class="topic-list-topic" role="cell">
-          <div class="topic-list-name">${escapeHtml(t.name)}</div>
+          <div class="topic-list-name">${escapeHtml(t.name)} ${categoryTag(t.category)}</div>
           ${snippet ? `<div class="topic-list-snippet">${escapeHtml(snippet)}</div>` : ''}
         </div>
         <div class="topic-list-owner" role="cell">
@@ -704,6 +919,7 @@ function renderHome(topics) {
   qInput.addEventListener('input', paint);
   ragFilter.addEventListener('change', paint);
   cadenceFilter.addEventListener('change', paint);
+  categoryFilter.addEventListener('change', paint);
   sortSelect.addEventListener('change', paint);
   paint();
 }
@@ -839,6 +1055,14 @@ async function openTopicModal(existing = null, opts = {}) {
         <label for="topic-description">Description</label>
         <textarea id="topic-description" rows="3" placeholder="Optional brief for this topic…">${escapeHtml((existing && existing.description) || '')}</textarea>
       </div>
+      <div class="field">
+        <label for="topic-category">Category <span class="req-mark" title="Required">*</span></label>
+        <select id="topic-category" required>
+          <option value=""${existing && existing.category ? '' : ' selected'} disabled>Select a category…</option>
+          ${CATEGORIES.map((c) => `<option value="${escapeHtml(c)}"${existing && existing.category === c ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+        </select>
+        <p class="field-hint">Project, proof of concept (POC), or an AI use case progressing towards production.</p>
+      </div>
       <div class="field-row">
         <div class="field">
           <label for="topic-owner">Owner</label>
@@ -883,11 +1107,17 @@ async function openTopicModal(existing = null, opts = {}) {
     const owner = backdrop.querySelector('#topic-owner').value.trim();
     const business_unit = backdrop.querySelector('#topic-bu').value.trim();
     const priorityRaw = backdrop.querySelector('#topic-priority').value.trim();
+    const category = backdrop.querySelector('#topic-category').value;
     if (!name) {
       toast('Title is required', 'error');
       return;
     }
-    const payload = { name, description, cadence: cadenceVal, owner, business_unit };
+    if (!category) {
+      toast('Choose a category', 'error');
+      backdrop.querySelector('#topic-category').focus();
+      return;
+    }
+    const payload = { name, description, cadence: cadenceVal, owner, business_unit, category };
     if (priorityRaw !== '') {
       const n = Number(priorityRaw);
       if (!Number.isFinite(n) || n < 1) {
@@ -1255,6 +1485,7 @@ function renderTopicUpdate(topic, previous, history) {
       <h1>${escapeHtml(topic.name)}</h1>
       ${topicDesc ? `<p class="topic-page-desc">${escapeHtml(topicDesc)}</p>` : ''}
       <p>
+        ${categoryTag(topic.category)}
         ${cadenceText(topic.cadence)}
         ${topic.owner ? `<span class="topic-owner"> · ${escapeHtml(topic.owner)}</span>` : ''}
         ${topic.business_unit ? `<span class="topic-owner"> · ${escapeHtml(topic.business_unit)}</span>` : ''}
@@ -1998,6 +2229,7 @@ async function showWeekly(initialEnding) {
       const metaBits = [];
       metaBits.push(topic.owner ? escapeHtml(topic.owner) : '<span class="report-empty">No owner</span>');
       if (topic.business_unit) metaBits.push(escapeHtml(topic.business_unit));
+      if (topic.category) metaBits.push(categoryTag(topic.category));
       if (topic.cadence) metaBits.push('<span class="cadence-text">' + escapeHtml(topic.cadence) + '</span>');
 
       const headEl = document.createElement('header');
@@ -2272,6 +2504,8 @@ function route() {
     showWeekly(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : undefined);
   } else if (h === '#topics') {
     showHome();
+  } else if (h.startsWith('#calendar')) {
+    showCalendar(/^#calendar=\d{4}-\d{2}$/.test(h) ? h.slice('#calendar='.length) : undefined);
   } else {
     showOverview();
   }

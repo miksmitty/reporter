@@ -16,7 +16,7 @@ const KEY_DATES_FILE = path.join(DATA_DIR, 'key_dates.csv');
 const COMMENTS_FILE = path.join(DATA_DIR, 'comments.csv');
 
 const TOPIC_HEADERS = [
-  'id', 'name', 'description', 'owner', 'business_unit', 'cadence',
+  'id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence',
   'active', 'sort_order', 'created_at', 'updated_at'
 ];
 const REPORT_HEADERS = [
@@ -32,6 +32,15 @@ const COMMENT_HEADERS = [
   'created_at', 'updated_at'
 ];
 const VALID_COMMENT_KINDS = new Set(['comment', 'question']);
+
+// What kind of work a topic is. Existing topics saved before this was added have none (shown as
+// Uncategorised) until they're next edited.
+const VALID_CATEGORIES = new Set(['Project', 'POC', 'AI use case']);
+
+// Report calendar: a report covers the Mon-Fri week ending on a Friday and is due on that Friday
+// (weekly), every other Friday (fortnightly) or the last Friday of the month (monthly). Prep starts
+// PREP_LEAD_DAYS working days earlier.
+const PREP_LEAD_DAYS = Number(process.env.REPORT_PREP_DAYS) || 2;
 
 const VALID_CADENCES = new Set(['weekly', 'fortnightly', 'monthly']);
 const VALID_RAG = new Set(['Red', 'Amber', 'Green', 'Blue']);
@@ -150,6 +159,7 @@ function loadTopics() {
     description: t.description != null ? String(t.description) : '',
     business_unit: t.business_unit != null ? String(t.business_unit) : '',
     owner: t.owner != null ? String(t.owner) : '',
+    category: VALID_CATEGORIES.has(t.category) ? t.category : '',
     active: t.active === 'true' || t.active === true,
     sort_order: Number(t.sort_order) || 0
   }));
@@ -374,6 +384,26 @@ function weekEndingFridayContaining(dateStr) {
   return addDaysIso(dateStr, 5 - dow);
 }
 
+/** Week-ending Friday of a report, or '' if it has no period_end. */
+function reportWeek(r) {
+  return r && r.period_end ? weekEndingFridayContaining(r.period_end) : '';
+}
+
+/** Reports for one topic, newest week first (ties: most recently saved). */
+function sortedByWeekDesc(reports) {
+  return reports.filter((r) => reportWeek(r)).sort((a, b) =>
+    reportWeek(b).localeCompare(reportWeek(a)) || (b.created_at || '').localeCompare(a.created_at || ''));
+}
+
+/**
+ * A topic that completed (RAG Blue) stays on the weekly report for the week it completed, then
+ * drops. If a later report reopens it (any non-Blue RAG), it counts again from that week.
+ */
+function droppedBefore(topicReports, friday) {
+  const prior = sortedByWeekDesc(topicReports).find((r) => reportWeek(r) < friday);
+  return Boolean(prior && prior.rag === 'Blue');
+}
+
 function weeklyBundle(weekEnding) {
   const friday = weekEndingFridayContaining(weekEnding || todayUTC());
   const monday = mondayOfWeekEnding(friday);
@@ -398,6 +428,7 @@ function weeklyBundle(weekEnding) {
         return (b.period_end || '').localeCompare(a.period_end || '');
       });
     if (!matches.length) continue;
+    if (droppedBefore(allReports.filter((r) => r.topic_id === topic.id), friday)) continue;
     const key_dates = allKeyDates
       .filter((k) => k.topic_id === topic.id)
       .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.created_at || '').localeCompare(b.created_at || ''));
@@ -421,6 +452,138 @@ function weeklyBundle(weekEnding) {
     available_weeks,
     items
   };
+}
+
+// ── Report calendar ─────────────────────────────────────────────────────────
+
+/** Subtract n working days (Mon-Fri) from an ISO date. */
+function subWorkingDays(dateStr, n) {
+  let d = dateStr;
+  while (n > 0) {
+    d = addDaysIso(d, -1);
+    const dow = utcDow(d);
+    if (dow !== 0 && dow !== 6) n -= 1;
+  }
+  return d;
+}
+
+function lastFridayOfMonth(year, month) { // month 1-12
+  const last = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+  return fridayOnOrBefore(last);
+}
+
+/** Due Fridays for one topic within [from, to] (inclusive ISO dates). */
+function dueDatesFor(topic, reports, from, to) {
+  const out = [];
+  if (topic.cadence === 'monthly') {
+    let [y, m] = from.split('-').map(Number);
+    m -= 1; // include the previous month: its last Friday can fall inside the window's prep range
+    if (m < 1) { m = 12; y -= 1; }
+    for (let i = 0; i < 14; i++) {
+      const d = lastFridayOfMonth(y, m);
+      if (d >= from && d <= to) out.push(d);
+      m += 1; if (m > 12) { m = 1; y += 1; }
+      if (d > to) break;
+    }
+    return out;
+  }
+  const step = topic.cadence === 'fortnightly' ? 14 : 7;
+  let anchor = null;
+  if (step === 14) {
+    // Fortnights run from the most recent report (or, failing that, the topic's creation week).
+    const latest = reports.filter((r) => r.period_end).map((r) => weekEndingFridayContaining(r.period_end)).sort().pop();
+    anchor = latest || weekEndingFridayContaining((topic.created_at || todayUTC()).slice(0, 10));
+  } else {
+    anchor = fridayOnOrBefore(from);
+  }
+  let d = anchor;
+  const diffDays = Math.round((Date.parse(from) - Date.parse(d)) / 86400000);
+  if (diffDays > 0) d = addDaysIso(d, Math.floor(diffDays / step) * step);
+  else if (diffDays < 0) d = addDaysIso(d, -Math.ceil(-diffDays / step) * step);
+  while (d < from) d = addDaysIso(d, step);
+  for (; d <= to; d = addDaysIso(d, step)) out.push(d);
+  return out;
+}
+
+function calendarBundle(month) { // YYYY-MM
+  const [y, m] = month.split('-').map(Number);
+  const first = `${month}-01`;
+  const last = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+  // Pad to whole Mon-Sun weeks so the grid is full, and a little beyond so prep for early-next-month dues shows.
+  const gridFrom = addDaysIso(first, -((utcDow(first) + 6) % 7));
+  const gridTo = addDaysIso(last, (7 - utcDow(last)) % 7);
+  const today = todayUTC();
+  const allReports = loadReports();
+  const events = [];
+  for (const topic of loadTopics().filter((t) => t.active !== false)) {
+    const reports = allReports.filter((r) => r.topic_id === topic.id);
+    const submittedFor = new Set(reports.filter((r) => r.period_end).map((r) => weekEndingFridayContaining(r.period_end)));
+    // Look a few days past the grid so prep for a due date just after it is still shown.
+    const newest = sortedByWeekDesc(reports)[0];
+    const completedWeek = newest && newest.rag === 'Blue' ? reportWeek(newest) : '';
+    for (const due of dueDatesFor(topic, reports, gridFrom, addDaysIso(gridTo, 7))) {
+      if (completedWeek && due > completedWeek) continue;
+      const prep = subWorkingDays(due, PREP_LEAD_DAYS);
+      const status = submittedFor.has(due) ? 'submitted' : (due < today ? 'overdue' : 'open');
+      const base = { topic_id: topic.id, topic_name: topic.name, category: topic.category, cadence: topic.cadence, owner: topic.owner, status, due_date: due, prep_date: prep };
+      if (due >= gridFrom && due <= gridTo) events.push({ ...base, type: 'due', date: due });
+      if (prep >= gridFrom && prep <= gridTo) events.push({ ...base, type: 'prep', date: prep });
+    }
+  }
+  events.sort((a, b) => a.date.localeCompare(b.date) || (a.type === b.type ? 0 : a.type === 'prep' ? -1 : 1) || a.topic_name.localeCompare(b.topic_name));
+  return { month, today, grid_from: gridFrom, grid_to: gridTo, prep_lead_days: PREP_LEAD_DAYS, events };
+}
+
+// ── Dashboard ───────────────────────────────────────────────────────────────
+
+function dashboardBundle() {
+  const today = todayUTC();
+  const thisFriday = weekEndingFridayContaining(today);
+  const topics = loadTopics().filter((t) => t.active !== false);
+  const allReports = loadReports();
+  const byTopic = new Map(topics.map((t) => [t.id, sortedByWeekDesc(allReports.filter((r) => r.topic_id === t.id))]));
+  const RAGS = ['Red', 'Amber', 'Green', 'Blue'];
+
+  // RAG mix over the last 8 weeks: each topic's latest report as of that week. Completed topics
+  // count once, in the week they complete, then drop (as on the weekly report).
+  const trend = [];
+  for (let i = 7; i >= 0; i--) {
+    const friday = addDaysIso(thisFriday, -7 * i);
+    const counts = { Red: 0, Amber: 0, Green: 0, Blue: 0 };
+    for (const t of topics) {
+      const reps = byTopic.get(t.id);
+      if (droppedBefore(reps, friday)) continue;
+      const asOf = reps.find((r) => reportWeek(r) <= friday);
+      if (asOf && counts[asOf.rag] !== undefined) counts[asOf.rag] += 1;
+    }
+    trend.push({ week_ending: friday, ...counts, total: RAGS.reduce((n, k) => n + counts[k], 0) });
+  }
+
+  const categories = {};
+  for (const c of [...VALID_CATEGORIES, '']) categories[c || 'Uncategorised'] = { Red: 0, Amber: 0, Green: 0, Blue: 0, none: 0 };
+  const movements = [];
+  for (const t of topics) {
+    const reps = byTopic.get(t.id);
+    const cur = reps[0];
+    const key = t.category || 'Uncategorised';
+    categories[key][cur && categories[key][cur.rag] !== undefined ? cur.rag : 'none'] += 1;
+    const prev = reps.find((r) => reportWeek(r) < (cur ? reportWeek(cur) : ''));
+    if (cur && prev && cur.rag !== prev.rag) {
+      const rank = { Red: 0, Amber: 1, Green: 2, Blue: 3 };
+      movements.push({ topic_id: t.id, topic_name: t.name, from: prev.rag, to: cur.rag, week_ending: reportWeek(cur), direction: rank[cur.rag] < rank[prev.rag] ? 'worse' : 'better' });
+    }
+  }
+  movements.sort((a, b) => b.week_ending.localeCompare(a.week_ending) || (a.direction === b.direction ? 0 : a.direction === 'worse' ? -1 : 1));
+
+  // Reporting calendar: overdue, and what's coming in the next 14 days.
+  const horizon = addDaysIso(today, 14);
+  const cal = calendarBundle(today.slice(0, 7));
+  const next = calendarBundle(addDaysIso(`${today.slice(0, 7)}-01`, 32).slice(0, 7));
+  const events = [...cal.events, ...next.events].filter((e, i, a) => a.findIndex((x) => x.topic_id === e.topic_id && x.type === e.type && x.date === e.date) === i);
+  const overdue = events.filter((e) => e.type === 'due' && e.status === 'overdue');
+  const upcoming = events.filter((e) => e.date >= today && e.date <= horizon && e.status !== 'submitted');
+
+  return { today, week_ending: thisFriday, trend, categories, movements: movements.slice(0, 8), overdue, upcoming, prep_lead_days: PREP_LEAD_DAYS };
 }
 
 function stripHtml(html) {
@@ -475,6 +638,16 @@ async function handleApi(req, res, pathname, url) {
     return sendJson(res, 200, weeklyBundle(ending));
   }
 
+  if (pathname === '/api/dashboard' && method === 'GET') {
+    return sendJson(res, 200, dashboardBundle());
+  }
+
+  if (pathname === '/api/calendar' && method === 'GET') {
+    const month = (url.searchParams.get('month') || '').trim() || todayUTC().slice(0, 7);
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return sendError(res, 400, 'month must be YYYY-MM');
+    return sendJson(res, 200, calendarBundle(month));
+  }
+
   if (pathname === '/api/topics' && method === 'GET') {
     return sendJson(res, 200, topicsWithLatest());
   }
@@ -486,7 +659,9 @@ async function handleApi(req, res, pathname, url) {
     const owner = (body.owner || '').trim();
     const description = (body.description || '').trim();
     const business_unit = (body.business_unit || '').trim();
+    const category = (body.category || '').trim();
     if (!name) return sendError(res, 400, 'name is required');
+    if (!VALID_CATEGORIES.has(category)) return sendError(res, 400, 'category must be Project, POC, or AI use case');
     if (!VALID_CADENCES.has(cadence)) {
       return sendError(res, 400, 'cadence must be weekly, fortnightly, or monthly');
     }
@@ -499,6 +674,7 @@ async function handleApi(req, res, pathname, url) {
       description,
       owner,
       business_unit,
+      category,
       cadence,
       active: true,
       sort_order: maxSort + 1,
@@ -528,6 +704,10 @@ async function handleApi(req, res, pathname, url) {
         return sendError(res, 400, 'cadence must be weekly, fortnightly, or monthly');
       }
       t.cadence = body.cadence;
+    }
+    if (body.category !== undefined) {
+      if (!VALID_CATEGORIES.has(body.category)) return sendError(res, 400, 'category must be Project, POC, or AI use case');
+      t.category = body.category;
     }
     if (body.owner !== undefined) t.owner = String(body.owner).trim();
     if (body.description !== undefined) t.description = String(body.description).trim();
