@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
 const { randomUUID } = require('crypto');
+const reportExport = require('./export');
 
 const PORT = Number(process.env.PORT) || 3080;
 const ROOT = __dirname;
@@ -23,6 +24,11 @@ const TOPIC_HEADERS = [
 const REPORT_HEADERS = [
   'id', 'topic_id', 'period_start', 'period_end', 'exec_summary', 'achievements',
   'next_steps', 'rag', 'trend', 'gtg_plan', 'created_at', 'updated_at'
+];
+const TOPIC_IMPORT_HEADERS = ['id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence', 'active'];
+const REPORT_IMPORT_HEADERS = [
+  'id', 'topic', 'period_start', 'period_end', 'rag', 'trend', 'exec_summary', 'achievements',
+  'next_steps', 'gtg_plan', 'created_at'
 ];
 const KEY_DATE_HEADERS = [
   'id', 'topic_id', 'date', 'description', 'created_at', 'updated_at'
@@ -660,6 +666,23 @@ async function handleApi(req, res, pathname, url) {
     return sendJson(res, 200, weeklyBundle(ending));
   }
 
+  if ((pathname === '/api/weekly.pdf' || pathname === '/api/weekly.pptx') && method === 'GET') {
+    const ending = (url.searchParams.get('ending') || '').trim() || todayUTC();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ending)) {
+      return sendError(res, 400, 'ending must be YYYY-MM-DD');
+    }
+    const bundle = weeklyBundle(ending);
+    const isPdf = pathname.endsWith('.pdf');
+    const body = isPdf ? reportExport.buildPdf(bundle) : reportExport.buildPptx(bundle);
+    res.writeHead(200, {
+      'Content-Type': isPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'Content-Disposition': `attachment; filename="weekly-report-${bundle.week_ending}.${isPdf ? 'pdf' : 'pptx'}"`,
+      'Content-Length': body.length,
+      'Cache-Control': 'no-store'
+    });
+    return res.end(body);
+  }
+
   if (pathname === '/api/categories' && method === 'GET') {
     const used = {};
     for (const t of loadTopics()) if (t.category) used[t.category] = (used[t.category] || 0) + 1;
@@ -725,6 +748,79 @@ async function handleApi(req, res, pathname, url) {
 
   if (pathname === '/api/topics' && method === 'GET') {
     return sendJson(res, 200, topicsWithLatest());
+  }
+
+  if (pathname === '/api/topics.csv' && method === 'GET') {
+    const rows = loadTopics()
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
+      .map((t) => ({ ...t, active: t.active ? 'true' : 'false' }));
+    // BOM so Excel reads UTF-8 correctly.
+    const body = Buffer.from('﻿' + serializeCsv(TOPIC_IMPORT_HEADERS, rows), 'utf8');
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="topics.csv"',
+      'Content-Length': body.length,
+      'Cache-Control': 'no-store'
+    });
+    return res.end(body);
+  }
+
+  // Bulk import: body { csv }. Rows match an existing topic by id, else by name (case-insensitive);
+  // matched rows are updated (blank cells are left unchanged), others are created. Invalid rows are
+  // skipped and reported; valid rows are still applied.
+  if (pathname === '/api/topics/import' && method === 'POST') {
+    const body = await readBody(req);
+    const text = String(body.csv || '').replace(/^﻿/, '');
+    if (!text.trim()) return sendError(res, 400, 'The CSV is empty');
+    const rows = parseCsv(text);
+    if (!rows.length) return sendError(res, 400, 'No data rows found');
+    if (!('name' in rows[0])) return sendError(res, 400, 'The CSV needs a "name" column');
+    const cats = categoryNames();
+    const topics = loadTopics();
+    const byId = new Map(topics.map((t) => [t.id, t]));
+    const byName = new Map(topics.map((t) => [t.name.toLowerCase(), t]));
+    let maxSort = topics.reduce((m, t) => Math.max(m, t.sort_order || 0), 0);
+    const result = { created: 0, updated: 0, errors: [] };
+    rows.forEach((r, i) => {
+      const line = i + 2;
+      const get = (k) => String(r[k] == null ? '' : r[k]).trim();
+      const name = get('name');
+      const id = get('id');
+      const existing = (id && byId.get(id)) || (name && byName.get(name.toLowerCase())) || null;
+      const cadence = get('cadence').toLowerCase();
+      const category = cats.find((c) => c.toLowerCase() === get('category').toLowerCase()) || '';
+      const activeRaw = get('active').toLowerCase();
+      if (!name && !existing) return result.errors.push({ line, message: 'name is required' });
+      if (cadence && !VALID_CADENCES.has(cadence)) return result.errors.push({ line, message: `cadence "${cadence}" must be weekly, fortnightly or monthly` });
+      if (get('category') && !category) return result.errors.push({ line, message: `unknown category "${get('category')}"` });
+      if (activeRaw && !['true', 'false', 'yes', 'no', '1', '0'].includes(activeRaw)) return result.errors.push({ line, message: 'active must be true or false' });
+      if (!existing && !cadence) return result.errors.push({ line, message: 'cadence is required for new topics' });
+      if (!existing && !category) return result.errors.push({ line, message: 'category is required for new topics' });
+      const active = ['true', 'yes', '1'].includes(activeRaw);
+      const ts = nowIso();
+      if (existing) {
+        if (name) { byName.delete(existing.name.toLowerCase()); existing.name = name; byName.set(name.toLowerCase(), existing); }
+        for (const k of ['description', 'owner', 'business_unit']) if (get(k)) existing[k] = get(k);
+        if (cadence) existing.cadence = cadence;
+        if (category) existing.category = category;
+        if (activeRaw) existing.active = active;
+        existing.updated_at = ts;
+        result.updated++;
+      } else {
+        const topic = {
+          id: randomUUID(), name, description: get('description'), owner: get('owner'),
+          business_unit: get('business_unit'), category, cadence, active: activeRaw ? active : true,
+          sort_order: ++maxSort, created_at: ts, updated_at: ts
+        };
+        topics.push(topic);
+        byId.set(topic.id, topic);
+        byName.set(name.toLowerCase(), topic);
+        result.created++;
+      }
+    });
+    if (result.created || result.updated) saveTopics(topics);
+    return sendJson(res, 200, result);
   }
 
   if (pathname === '/api/topics' && method === 'POST') {
@@ -793,6 +889,100 @@ async function handleApi(req, res, pathname, url) {
     topics[idx] = t;
     saveTopics(topics);
     return sendJson(res, 200, { ...t, latest_report: latestReport(t.id) });
+  }
+
+  if (pathname === '/api/reports.csv' && method === 'GET') {
+    const names = new Map(loadTopics().map((t) => [t.id, t.name]));
+    const rows = loadReports()
+      .filter((r) => names.has(r.topic_id))
+      .map((r) => ({ ...r, topic: names.get(r.topic_id) }))
+      .sort((a, b) => a.topic.localeCompare(b.topic) || (a.period_end || '').localeCompare(b.period_end || ''));
+    const body = Buffer.from('﻿' + serializeCsv(REPORT_IMPORT_HEADERS, rows), 'utf8');
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="reports.csv"',
+      'Content-Length': body.length,
+      'Cache-Control': 'no-store'
+    });
+    return res.end(body);
+  }
+
+  // Bulk import of reports (historic data). Body { csv }. The topic is matched by name (or topic_id);
+  // a row updates an existing report with the same id, else the same topic + period_end, else is created.
+  // Imported reports are dated by their period (created_at defaults to period_end) so history never
+  // displaces a newer report as the topic's "latest".
+  if (pathname === '/api/reports/import' && method === 'POST') {
+    const body = await readBody(req);
+    const text = String(body.csv || '').replace(/^﻿/, '');
+    if (!text.trim()) return sendError(res, 400, 'The CSV is empty');
+    const rows = parseCsv(text);
+    if (!rows.length) return sendError(res, 400, 'No data rows found');
+    if (!('period_end' in rows[0]) || !('topic' in rows[0] || 'topic_id' in rows[0])) {
+      return sendError(res, 400, 'The CSV needs "topic" (name) and "period_end" columns');
+    }
+    const topics = loadTopics();
+    const topicById = new Map(topics.map((t) => [t.id, t]));
+    const topicByName = new Map(topics.map((t) => [t.name.toLowerCase(), t]));
+    const reports = loadReports();
+    const byId = new Map(reports.map((r) => [r.id, r]));
+    const byKey = new Map(reports.map((r) => [r.topic_id + '|' + r.period_end, r]));
+    const rich = (v) => {
+      v = String(v == null ? '' : v);
+      if (!v.trim() || /<[a-z][\s\S]*>/i.test(v)) return v;
+      const esc = (x) => x.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return v.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => '<p>' + esc(l) + '</p>').join('');
+    };
+    const isDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d);
+    const result = { created: 0, updated: 0, errors: [] };
+    rows.forEach((r, i) => {
+      const line = i + 2;
+      const get = (k) => String(r[k] == null ? '' : r[k]).trim();
+      const err = (message) => result.errors.push({ line, message });
+      const topic = topicById.get(get('topic_id')) || topicByName.get(get('topic').toLowerCase());
+      if (!topic) return err(`unknown topic "${get('topic') || get('topic_id')}" (create it first)`);
+      const period_end = get('period_end');
+      if (!isDate(period_end)) return err('period_end must be YYYY-MM-DD');
+      const period_start = get('period_start') || addDaysIso(period_end, -4);
+      if (!isDate(period_start)) return err('period_start must be YYYY-MM-DD');
+      const existing = (get('id') && byId.get(get('id'))) || byKey.get(topic.id + '|' + period_end) || null;
+      const rag = VALID_RAG.has(get('rag')) ? get('rag') : [...VALID_RAG].find((v) => v.toLowerCase() === get('rag').toLowerCase()) || '';
+      const trend = [...VALID_TREND].find((v) => v.toLowerCase() === get('trend').toLowerCase()) || '';
+      if (get('rag') && !rag) return err('rag must be Red, Amber, Green or Blue');
+      if (get('trend') && !trend) return err('trend must be Improving, Stable or Declining');
+      const created = get('created_at');
+      if (created && Number.isNaN(Date.parse(created))) return err('created_at is not a valid date');
+      const merged = {
+        rag: rag || (existing && existing.rag) || '',
+        trend: trend || (existing && existing.trend) || '',
+        exec_summary: get('exec_summary') ? rich(r.exec_summary) : (existing ? existing.exec_summary : ''),
+        gtg_plan: get('gtg_plan') ? rich(r.gtg_plan) : (existing ? existing.gtg_plan : '')
+      };
+      if (!merged.rag) return err('rag is required');
+      if (!merged.trend) return err('trend is required');
+      if (isEmptyRich(merged.exec_summary)) return err('exec_summary is required');
+      if (merged.rag !== 'Green' && merged.rag !== 'Blue' && isEmptyRich(merged.gtg_plan)) return err('gtg_plan is required when rag is Red or Amber');
+      if (merged.rag === 'Green' || merged.rag === 'Blue') merged.gtg_plan = '';
+      const ts = nowIso();
+      if (existing) {
+        Object.assign(existing, merged, { period_start, period_end, updated_at: ts });
+        if (get('achievements')) existing.achievements = rich(r.achievements);
+        if (get('next_steps')) existing.next_steps = rich(r.next_steps);
+        if (created) existing.created_at = created;
+        result.updated++;
+      } else {
+        const report = {
+          id: randomUUID(), topic_id: topic.id, period_start, period_end, ...merged,
+          achievements: rich(r.achievements), next_steps: rich(r.next_steps),
+          created_at: created || period_end + 'T12:00:00.000Z', updated_at: ts
+        };
+        reports.push(report);
+        byId.set(report.id, report);
+        byKey.set(topic.id + '|' + period_end, report);
+        result.created++;
+      }
+    });
+    if (result.created || result.updated) saveReports(reports);
+    return sendJson(res, 200, result);
   }
 
   const reportsMatch = pathname.match(/^\/api\/topics\/([^/]+)\/reports$/);

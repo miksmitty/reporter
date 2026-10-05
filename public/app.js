@@ -648,6 +648,7 @@ function renderSettings(cats) {
       <button type="submit" class="btn btn-primary">Add</button>
     </form>`;
   app.appendChild(card);
+  app.appendChild(buildImportExportCard());
   const ul = card.querySelector('.cat-list');
   const refresh = () => showSettings();
   const run = async (fn, okMsg) => {
@@ -696,6 +697,50 @@ function renderSettings(cats) {
     if (!name) return inp.focus();
     run(() => api('/api/categories', { method: 'POST', body: JSON.stringify({ name }) }), 'Category added');
   });
+}
+
+function buildImportExportCard() {
+  const card = document.createElement('section');
+  card.className = 'panel settings-card';
+  card.style.marginTop = '1rem';
+  card.innerHTML = `
+    <h2 class="settings-title">Bulk import / export</h2>
+    <p class="settings-help"><strong>Topics:</strong> rows match an existing topic by <code>id</code> or <code>name</code> and update it (blank cells are left unchanged); other rows create new topics, which need <code>name</code>, <code>category</code> and <code>cadence</code>.</p>
+    <p class="settings-help"><strong>Reports</strong> (for historic data): the topic must already exist. Each row needs <code>topic</code> (name), <code>period_end</code> (a Friday, YYYY-MM-DD), <code>rag</code>, <code>trend</code> and <code>exec_summary</code>; <code>gtg_plan</code> is needed for Red/Amber. <code>period_start</code> defaults to the Monday. A row with the same topic and <code>period_end</code> updates that report. Plain text is fine in the narrative columns. Imported reports are dated by their period, so they never replace a newer report as the latest.</p>
+    <div class="ie-row" data-kind="topics"><strong>Topics</strong>
+      <a class="btn" href="api/topics.csv" download="topics.csv">Export CSV</a>
+      <button type="button" class="btn btn-primary" data-import>Import CSV…</button>
+      <input type="file" accept=".csv,text/csv" hidden />
+      <div class="import-result" aria-live="polite"></div></div>
+    <div class="ie-row" data-kind="reports"><strong>Reports</strong>
+      <a class="btn" href="api/reports.csv" download="reports.csv">Export CSV</a>
+      <button type="button" class="btn btn-primary" data-import>Import CSV…</button>
+      <input type="file" accept=".csv,text/csv" hidden />
+      <div class="import-result" aria-live="polite"></div></div>`;
+  card.querySelectorAll('.ie-row').forEach((row) => {
+    row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin-top:.75rem';
+    row.querySelector('strong').style.minWidth = '4.5rem';
+    row.querySelector('.import-result').style.cssText = 'flex-basis:100%';
+    const input = row.querySelector('input[type=file]');
+    const out = row.querySelector('.import-result');
+    row.querySelector('[data-import]').addEventListener('click', () => input.click());
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      input.value = '';
+      if (!file) return;
+      try {
+        const res = await api('/api/' + row.dataset.kind + '/import', { method: 'POST', body: JSON.stringify({ csv: await file.text() }) });
+        const errs = res.errors || [];
+        out.innerHTML = `<p>${res.created} created, ${res.updated} updated${errs.length ? `, ${errs.length} skipped` : ''}.</p>` +
+          (errs.length ? `<ul>${errs.map((e) => `<li>Line ${e.line}: ${escapeHtml(e.message)}</li>`).join('')}</ul>` : '');
+        toast(`Import done: ${res.created} created, ${res.updated} updated`);
+      } catch (err) {
+        out.textContent = '';
+        toast(err.message, 'error');
+      }
+    });
+  });
+  return card;
 }
 
 function confirmDeleteCategory(cat, cats, run) {
@@ -2191,8 +2236,19 @@ async function showWeekly(initialEnding) {
     pngBtn.textContent = 'Download PNG';
     pngBtn.title = 'Download the whole weekly report as an image';
     pngBtn.addEventListener('click', () => exportPng(pngBtn, () => document.getElementById('weekly-export'), 'weekly-report-' + data.week_ending, dropRailColumn));
+    const fileLink = (ext, label, title) => {
+      const a = document.createElement('a');
+      a.className = 'btn';
+      a.textContent = label;
+      a.title = title;
+      a.href = 'api/weekly.' + ext + '?ending=' + encodeURIComponent(data.week_ending);
+      a.setAttribute('download', 'weekly-report-' + data.week_ending + '.' + ext);
+      return a;
+    };
     headActions.appendChild(dateField);
     headActions.appendChild(pngBtn);
+    headActions.appendChild(fileLink('pdf', 'Download PDF', 'Download the weekly report as a PDF'));
+    headActions.appendChild(fileLink('pptx', 'Download PPT', 'Download the weekly report as a PowerPoint deck'));
     head.appendChild(headActions);
     app.appendChild(head);
 

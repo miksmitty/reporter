@@ -30,6 +30,8 @@ CSV files under `data/`:
 
 `categories.csv` (id, name, sort_order) holds the topic categories. Manage them on the **Settings** page (add, rename, reorder, delete); it is seeded with Project / POC / AI use case on first run. Renaming updates every topic that uses the category; deleting offers to move its topics to another category or to Uncategorised. API: `GET/POST /api/categories`, `PATCH/DELETE /api/categories/:id` (`?reassign=<name>`), `POST /api/categories/order` (`{ids}`).
 
+Weekly report downloads (no dependencies, built in `export.js`): `GET /api/weekly.pdf?ending=YYYY-MM-DD` and `GET /api/weekly.pptx?ending=YYYY-MM-DD`; the Weekly pack page has **Download PDF** / **Download PPT** buttons.
+
 Narrative fields store HTML. Values are RFC 4180 quoted (including multiline).
 
 Cadence: `weekly` \| `fortnightly` \| `monthly`  
