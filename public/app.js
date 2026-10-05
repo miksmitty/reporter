@@ -1960,7 +1960,7 @@ async function exportPng(btn, getNode, name, onClone) {
   }
 }
 
-/* ── Management follow-up comments / questions ─────────────────────────── */
+/* ── Review comments (PowerPoint-style threaded pane) ──────────────────── */
 
 
 let currentUserPromise = null;
@@ -1979,148 +1979,398 @@ function formatStamp(iso) {
     ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
-/** Follow-up thread + composer for one topic in one reporting week. */
-function buildFollowUps(item, weekEnding, onChange) {
-  const topic = item.topic || {};
-  if (!Array.isArray(item.comments)) item.comments = [];
-  const wrap = document.createElement('div');
-  wrap.className = 'followups';
+const CMT_ICON = {
+  bubble: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H10l-4 4v-4H5.5A1.5 1.5 0 0 1 4 14.5z"/></svg>',
+  check: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16 9.5"/></svg>',
+  more: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>',
+  prev: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>',
+  next: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>',
+  close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>'
+};
 
-  const head = document.createElement('div');
-  head.className = 'followups-head';
-  const title = document.createElement('div');
-  title.className = 'panel-label';
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'btn btn-sm followups-add';
-  addBtn.setAttribute('data-png-skip', '');
-  addBtn.textContent = '+ Comment';
-  addBtn.title = 'Add a comment for the topic owner';
-  head.appendChild(title);
-  head.appendChild(addBtn);
-  wrap.appendChild(head);
+function commentThreads(item) {
+  const all = Array.isArray(item.comments) ? item.comments : [];
+  const roots = all.filter((c) => !c.parent_id);
+  return roots.map((root) => ({
+    root,
+    replies: all.filter((c) => c.parent_id === root.id)
+  }));
+}
 
-  const list = document.createElement('ul');
-  list.className = 'followups-list';
-  wrap.appendChild(list);
+function openThreadCount(item) {
+  return commentThreads(item).filter((t) => !t.root.resolved).length;
+}
 
-  const form = document.createElement('form');
-  form.className = 'followups-form';
-  form.setAttribute('data-png-skip', '');
-  form.hidden = true;
-  form.innerHTML =
-    '<textarea class="followups-body" rows="3" maxlength="2000" placeholder="Add a comment…" aria-label="Comment"></textarea>' +
-    '<div class="followups-form-actions">' +
-      '<span class="followups-as">Commenting as <b class="followups-as-name"></b></span>' +
-      '<button type="button" class="btn btn-ghost btn-sm followups-cancel">Cancel</button>' +
-      '<button type="submit" class="btn btn-primary btn-sm">Post</button>' +
+function commentInitials(name) {
+  const parts = String(name || '?').replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return ((parts[0][0] || '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+function commentAvatar(name, small) {
+  let h = 0;
+  for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const el = document.createElement('span');
+  el.className = 'cmt-avatar' + (small ? ' is-small' : '');
+  el.style.setProperty('--cmt-hue', String(h % 360));
+  el.textContent = commentInitials(name);
+  el.setAttribute('aria-hidden', 'true');
+  return el;
+}
+
+function commentAgo(iso) {
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return '';
+  const mins = Math.round((Date.now() - t) / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return mins + ' min ago';
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return hrs + ' h ago';
+  if (hrs < 48) return 'Yesterday';
+  return formatStamp(iso);
+}
+
+/**
+ * PowerPoint-style review pane: one slide (topic) at a time, threaded comments with replies,
+ * Resolve thread, edit/delete on your own comments, and prev/next navigation between topics.
+ * `onChange` runs after any change so badges elsewhere on the page can refresh.
+ */
+function createCommentsPane(items, weekEnding, onChange) {
+  const pane = document.createElement('aside');
+  pane.className = 'cmt-pane';
+  pane.setAttribute('data-png-skip', '');
+  pane.setAttribute('aria-label', 'Comments');
+  pane.hidden = true;
+  pane.innerHTML =
+    '<header class="cmt-head">' +
+      '<div class="cmt-head-row">' +
+        '<h2 class="cmt-title">Comments</h2>' +
+        '<button type="button" class="btn btn-primary btn-sm cmt-new">New</button>' +
+        '<button type="button" class="cmt-icon-btn cmt-close" aria-label="Close comments" title="Close">' + CMT_ICON.close + '</button>' +
+      '</div>' +
+      '<div class="cmt-nav">' +
+        '<button type="button" class="cmt-icon-btn cmt-prev" aria-label="Previous topic" title="Previous topic">' + CMT_ICON.prev + '</button>' +
+        '<div class="cmt-nav-label"><span class="cmt-topic-name"></span><span class="cmt-topic-pos"></span></div>' +
+        '<button type="button" class="cmt-icon-btn cmt-next" aria-label="Next topic" title="Next topic">' + CMT_ICON.next + '</button>' +
+      '</div>' +
+      '<div class="cmt-filter" role="tablist" aria-label="Show">' +
+        '<button type="button" role="tab" data-filter="active">Active</button>' +
+        '<button type="button" role="tab" data-filter="resolved">Resolved</button>' +
+        '<button type="button" role="tab" data-filter="all">All</button>' +
+      '</div>' +
+    '</header>' +
+    '<div class="cmt-scroll">' +
+      '<form class="cmt-composer" hidden>' +
+        '<textarea rows="3" maxlength="2000" placeholder="Start a conversation…" aria-label="New comment"></textarea>' +
+        '<div class="cmt-actions"><button type="button" class="btn btn-ghost btn-sm cmt-cancel">Cancel</button>' +
+        '<button type="submit" class="btn btn-primary btn-sm">Post</button></div>' +
+      '</form>' +
+      '<div class="cmt-threads"></div>' +
     '</div>';
-  wrap.appendChild(form);
 
-  const asName = form.querySelector('.followups-as-name');
-  const bodyIn = form.querySelector('.followups-body');
+  const $ = (s) => pane.querySelector(s);
+  const threadsEl = $('.cmt-threads');
+  const composer = $('.cmt-composer');
+  const composerText = composer.querySelector('textarea');
+  let idx = 0;
+  let filter = 'active';
+  let me = 'Reviewer';
+  getCurrentUser().then((n) => { me = n; if (!pane.hidden) render(); });
 
-  bodyIn.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); form.requestSubmit(); }
-    if (e.key === 'Escape') closeForm();
-  });
+  const current = () => items[idx];
+  const topicOf = (i) => (i && i.topic) || {};
+
+  async function call(url, opts) {
+    try { return await api(url, opts); } catch (err) { toast(err.message, 'error'); return null; }
+  }
+  function normalise(row) {
+    row.resolved = row.resolved === true || row.resolved === 'true';
+    row.parent_id = row.parent_id || '';
+    return row;
+  }
+  function changed() { render(); onChange(); }
+
+  function closeMenus() { pane.querySelectorAll('.cmt-menu').forEach((m) => m.remove()); }
+  document.addEventListener('click', (e) => { if (!e.target.closest('.cmt-more, .cmt-menu')) closeMenus(); });
+
+  function commentBlock(c, thread, isRoot) {
+    const box = document.createElement('div');
+    box.className = 'cmt' + (isRoot ? '' : ' is-reply');
+    const mine = c.author === me;
+
+    const top = document.createElement('div');
+    top.className = 'cmt-top';
+    const who = document.createElement('div');
+    who.className = 'cmt-who';
+    const name = document.createElement('span');
+    name.className = 'cmt-author';
+    name.textContent = c.author;
+    const when = document.createElement('span');
+    when.className = 'cmt-time';
+    when.title = formatStamp(c.created_at);
+    when.textContent = commentAgo(c.created_at);
+    who.appendChild(name);
+    who.appendChild(when);
+    top.appendChild(commentAvatar(c.author, !isRoot));
+    top.appendChild(who);
+
+    const tools = document.createElement('div');
+    tools.className = 'cmt-tools';
+    if (isRoot) {
+      const res = document.createElement('button');
+      res.type = 'button';
+      res.className = 'cmt-icon-btn cmt-resolve' + (c.resolved ? ' is-on' : '');
+      res.innerHTML = CMT_ICON.check;
+      res.title = c.resolved ? 'Reopen thread' : 'Resolve thread';
+      res.setAttribute('aria-label', res.title);
+      res.addEventListener('click', async () => {
+        const upd = await call('/api/comments/' + encodeURIComponent(c.id), {
+          method: 'PATCH', body: JSON.stringify({ resolved: !c.resolved })
+        });
+        if (!upd) return;
+        c.resolved = upd.resolved === true || upd.resolved === 'true';
+        changed();
+      });
+      tools.appendChild(res);
+    }
+    if (mine) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'cmt-icon-btn cmt-more';
+      more.innerHTML = CMT_ICON.more;
+      more.title = 'More actions';
+      more.setAttribute('aria-label', 'More actions');
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const had = box.querySelector('.cmt-menu');
+        closeMenus();
+        if (had) return;
+        const menu = document.createElement('div');
+        menu.className = 'cmt-menu';
+        menu.setAttribute('role', 'menu');
+        const mk = (label, danger, fn) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.setAttribute('role', 'menuitem');
+          b.textContent = label;
+          if (danger) b.className = 'is-danger';
+          b.addEventListener('click', () => { closeMenus(); fn(); });
+          menu.appendChild(b);
+        };
+        mk(isRoot ? 'Edit comment' : 'Edit reply', false, () => startEdit(c, box, body));
+        mk(isRoot ? 'Delete thread' : 'Delete reply', true, async () => {
+          const msg = isRoot && thread.replies.length ? 'Delete this comment and its replies?' : 'Delete this comment?';
+          if (!window.confirm(msg)) return;
+          const ok = await call('/api/comments/' + encodeURIComponent(c.id), { method: 'DELETE' });
+          if (!ok) return;
+          current().comments = current().comments.filter((x) => x.id !== c.id && x.parent_id !== c.id);
+          changed();
+        });
+        tools.appendChild(menu);
+      });
+      tools.appendChild(more);
+    }
+    top.appendChild(tools);
+    box.appendChild(top);
+
+    const body = document.createElement('div');
+    body.className = 'cmt-body';
+    body.textContent = c.body;
+    box.appendChild(body);
+    return box;
+  }
+
+  function startEdit(c, box, bodyEl) {
+    const form = document.createElement('form');
+    form.className = 'cmt-edit';
+    form.innerHTML = '<textarea rows="3" maxlength="2000" aria-label="Edit comment"></textarea>' +
+      '<div class="cmt-actions"><button type="button" class="btn btn-ghost btn-sm">Cancel</button>' +
+      '<button type="submit" class="btn btn-primary btn-sm">Save</button></div>';
+    const ta = form.querySelector('textarea');
+    ta.value = c.body;
+    bodyEl.replaceWith(form);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    form.querySelector('.btn-ghost').addEventListener('click', render);
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); render(); }
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); form.requestSubmit(); }
+    });
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = ta.value.trim();
+      if (!text) { toast('Enter your comment', 'error'); return; }
+      if (text === c.body) { render(); return; }
+      const upd = await call('/api/comments/' + encodeURIComponent(c.id), {
+        method: 'PATCH', body: JSON.stringify({ body: text })
+      });
+      if (!upd) return;
+      c.body = upd.body;
+      c.updated_at = upd.updated_at;
+      changed();
+    });
+  }
+
+  function replyBox(thread) {
+    const wrap = document.createElement('form');
+    wrap.className = 'cmt-reply';
+    wrap.innerHTML = '<textarea rows="1" maxlength="2000" placeholder="Reply" aria-label="Reply"></textarea>' +
+      '<div class="cmt-actions" hidden><button type="button" class="btn btn-ghost btn-sm">Cancel</button>' +
+      '<button type="submit" class="btn btn-primary btn-sm">Reply</button></div>';
+    const ta = wrap.querySelector('textarea');
+    const actions = wrap.querySelector('.cmt-actions');
+    const collapse = () => { ta.value = ''; ta.rows = 1; actions.hidden = true; };
+    ta.addEventListener('focus', () => { ta.rows = 3; actions.hidden = false; });
+    wrap.querySelector('.btn-ghost').addEventListener('click', () => { collapse(); ta.blur(); });
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); collapse(); ta.blur(); }
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); wrap.requestSubmit(); }
+    });
+    wrap.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = ta.value.trim();
+      if (!text) { ta.focus(); return; }
+      const item = current();
+      const row = await call('/api/topics/' + encodeURIComponent(topicOf(item).id) + '/comments', {
+        method: 'POST',
+        body: JSON.stringify({ week_ending: weekEnding, kind: 'comment', body: text, parent_id: thread.root.id })
+      });
+      if (!row) return;
+      item.comments.push(normalise(row));
+      changed();
+    });
+    return wrap;
+  }
 
   function render() {
-    const open = item.comments.filter((c) => !c.resolved).length;
-    title.textContent = 'Comments' +
-      (item.comments.length ? ' · ' + item.comments.length + (open ? ' (' + open + ' open)' : ' (all resolved)') : '');
-    wrap.classList.toggle('is-empty', !item.comments.length);
-    if (item.comments.length) wrap.removeAttribute('data-png-skip'); else wrap.setAttribute('data-png-skip', '');
-    list.innerHTML = '';
-    for (const c of item.comments) {
-      const li = document.createElement('li');
-      li.className = 'followup' + (c.resolved ? ' is-resolved' : '');
-      const meta = document.createElement('div');
-      meta.className = 'followup-meta';
-      meta.innerHTML =
-        '<span class="followup-author">' + escapeHtml(c.author) + '</span>' +
-        '<span class="followup-time">' + escapeHtml(formatStamp(c.created_at)) + '</span>' +
-        (c.resolved ? '<span class="followup-resolved-tag">Resolved</span>' : '');
-      const tools = document.createElement('span');
-      tools.className = 'followup-tools';
-      tools.setAttribute('data-png-skip', '');
-      const resolveBtn = document.createElement('button');
-      resolveBtn.type = 'button';
-      resolveBtn.className = 'btn btn-ghost btn-sm';
-      resolveBtn.textContent = c.resolved ? 'Reopen' : 'Resolve';
-      resolveBtn.addEventListener('click', async () => {
-        resolveBtn.disabled = true;
-        try {
-          const updated = await api('/api/comments/' + encodeURIComponent(c.id), {
-            method: 'PATCH', body: JSON.stringify({ resolved: !c.resolved })
-          });
-          c.resolved = updated.resolved === true || updated.resolved === 'true';
-          render(); onChange();
-        } catch (err) { toast(err.message, 'error'); resolveBtn.disabled = false; }
-      });
-      const delBtn = document.createElement('button');
-      delBtn.type = 'button';
-      delBtn.className = 'btn btn-ghost btn-sm';
-      delBtn.textContent = 'Delete';
-      delBtn.addEventListener('click', async () => {
-        if (!window.confirm('Delete this comment?')) return;
-        try {
-          await api('/api/comments/' + encodeURIComponent(c.id), { method: 'DELETE' });
-          item.comments = item.comments.filter((x) => x.id !== c.id);
-          render(); onChange();
-        } catch (err) { toast(err.message, 'error'); }
-      });
-      tools.appendChild(resolveBtn);
-      tools.appendChild(delBtn);
-      meta.appendChild(tools);
-      const text = document.createElement('div');
-      text.className = 'followup-body';
-      text.textContent = c.body;
-      li.appendChild(meta);
-      li.appendChild(text);
-      list.appendChild(li);
+    closeMenus();
+    const item = current();
+    const topic = topicOf(item);
+    $('.cmt-topic-name').textContent = topic.name || 'Untitled';
+    $('.cmt-topic-pos').textContent = (idx + 1) + ' of ' + items.length;
+    $('.cmt-prev').disabled = idx <= 0;
+    $('.cmt-next').disabled = idx >= items.length - 1;
+    pane.querySelectorAll('.cmt-filter button').forEach((b) => {
+      b.classList.toggle('is-on', b.dataset.filter === filter);
+      b.setAttribute('aria-selected', b.dataset.filter === filter ? 'true' : 'false');
+    });
+
+    const threads = commentThreads(item);
+    const nOpen = threads.filter((t) => !t.root.resolved).length;
+    const nDone = threads.length - nOpen;
+    pane.querySelector('[data-filter="active"]').textContent = 'Active' + (nOpen ? ' (' + nOpen + ')' : '');
+    pane.querySelector('[data-filter="resolved"]').textContent = 'Resolved' + (nDone ? ' (' + nDone + ')' : '');
+    const shown = threads.filter((t) => filter === 'all' || (filter === 'resolved') === !!t.root.resolved);
+
+    threadsEl.innerHTML = '';
+    if (!shown.length) {
+      const empty = document.createElement('div');
+      empty.className = 'cmt-empty';
+      empty.innerHTML = CMT_ICON.bubble +
+        '<p>' + (threads.length
+          ? (filter === 'resolved' ? 'No resolved comments.' : filter === 'active' ? 'All comments on this topic are resolved.' : 'No comments.')
+          : 'No comments on this topic yet.') + '</p>' +
+        '<p class="cmt-empty-hint">Select <b>New</b> to start a conversation.</p>';
+      threadsEl.appendChild(empty);
     }
-    onChange();
+    for (const t of shown) {
+      const card = document.createElement('article');
+      card.className = 'cmt-thread' + (t.root.resolved ? ' is-resolved' : '');
+      card.appendChild(commentBlock(t.root, t, true));
+      if (t.replies.length) {
+        const rep = document.createElement('div');
+        rep.className = 'cmt-replies';
+        for (const r of t.replies) rep.appendChild(commentBlock(r, t, false));
+        card.appendChild(rep);
+      }
+      if (t.root.resolved) {
+        const banner = document.createElement('div');
+        banner.className = 'cmt-resolved-note';
+        banner.innerHTML = CMT_ICON.check + '<span>Resolved</span>';
+        card.appendChild(banner);
+      } else {
+        card.appendChild(replyBox(t));
+      }
+      threadsEl.appendChild(card);
+    }
   }
 
-  function openForm() {
-    form.hidden = false;
-    addBtn.hidden = true;
-    getCurrentUser().then((n) => { asName.textContent = n; });
-    bodyIn.focus();
+  function highlightSection() {
+    document.querySelectorAll('.weekly-section.is-commenting').forEach((s) => s.classList.remove('is-commenting'));
+    if (pane.hidden) return;
+    const tid = topicOf(current()).id;
+    const sec = tid && document.getElementById('topic-' + tid);
+    if (sec) sec.classList.add('is-commenting');
   }
-  function closeForm() {
-    form.hidden = true;
-    addBtn.hidden = false;
-    bodyIn.value = '';
-  }
-  addBtn.addEventListener('click', openForm);
-  form.querySelector('.followups-cancel').addEventListener('click', closeForm);
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const text = bodyIn.value.trim();
-    if (!text) { toast('Enter your comment', 'error'); bodyIn.focus(); return; }
-    const submit = form.querySelector('button[type="submit"]');
-    submit.disabled = true;
-    try {
-      const row = await api('/api/topics/' + encodeURIComponent(topic.id) + '/comments', {
-        method: 'POST',
-        body: JSON.stringify({ week_ending: weekEnding, kind: 'comment', body: text })
-      });
-      row.resolved = row.resolved === true || row.resolved === 'true';
-      item.comments.push(row);
-      closeForm();
-      render();
-      toast('Comment posted');
-    } catch (err) {
-      toast(err.message, 'error');
-    } finally {
-      submit.disabled = false;
+
+  function show(i, scroll) {
+    if (!items.length) return;
+    idx = Math.max(0, Math.min(items.length - 1, i));
+    pane.hidden = false;
+    composer.hidden = true;
+    composerText.value = '';
+    render();
+    highlightSection();
+    if (scroll) {
+      const tid = topicOf(current()).id;
+      const sec = tid && document.getElementById('topic-' + tid);
+      if (sec) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+  }
+  function hide() {
+    pane.hidden = true;
+    highlightSection();
+  }
+  function openComposer() {
+    composer.hidden = false;
+    composerText.focus();
+    pane.querySelector('.cmt-scroll').scrollTop = 0;
+  }
+  function closeComposer() { composer.hidden = true; composerText.value = ''; }
+
+  $('.cmt-close').addEventListener('click', hide);
+  $('.cmt-new').addEventListener('click', openComposer);
+  $('.cmt-prev').addEventListener('click', () => show(idx - 1, true));
+  $('.cmt-next').addEventListener('click', () => show(idx + 1, true));
+  composer.querySelector('.cmt-cancel').addEventListener('click', closeComposer);
+  pane.querySelectorAll('.cmt-filter button').forEach((b) => b.addEventListener('click', () => { filter = b.dataset.filter; render(); }));
+  composerText.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); closeComposer(); }
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); composer.requestSubmit(); }
   });
+  composer.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = composerText.value.trim();
+    if (!text) { composerText.focus(); return; }
+    const item = current();
+    const row = await call('/api/topics/' + encodeURIComponent(topicOf(item).id) + '/comments', {
+      method: 'POST',
+      body: JSON.stringify({ week_ending: weekEnding, kind: 'comment', body: text })
+    });
+    if (!row) return;
+    if (!Array.isArray(item.comments)) item.comments = [];
+    item.comments.push(normalise(row));
+    closeComposer();
+    if (filter === 'resolved') filter = 'active';
+    changed();
+  });
+  pane.addEventListener('keydown', (e) => { if (e.key === 'Escape' && composer.hidden) hide(); });
 
-  render();
-  return wrap;
+  for (const it of items) (it.comments || []).forEach(normalise);
+
+  return {
+    el: pane,
+    open: (topicId, opts) => {
+      const i = items.findIndex((it) => topicOf(it).id === topicId);
+      if (i >= 0) show(i, !(opts && opts.noScroll));
+    },
+    openNew: (topicId) => {
+      const i = items.findIndex((it) => topicOf(it).id === topicId);
+      if (i >= 0) { show(i, true); openComposer(); }
+    },
+    isOpen: () => !pane.hidden,
+    refresh: () => { if (!pane.hidden) render(); }
+  };
 }
 
 async function showWeekly(initialEnding) {
@@ -2269,7 +2519,7 @@ async function showWeekly(initialEnding) {
     cover.innerHTML =
       '<div class="weekly-cover-title">Weekly status — week ending ' + escapeHtml(formatDate(data.week_ending)) + '</div>' +
       '<div class="weekly-cover-stats">' +
-        '<span class="weekly-cover-stat weekly-cover-followups" data-png-skip hidden></span>' +
+        '<button type="button" class="weekly-cover-stat weekly-cover-followups" data-png-skip hidden title="Open the first unresolved comment"></button>' +
         '<span class="weekly-cover-stat"><b>' + items.length + '</b> topic' + (items.length === 1 ? '' : 's') + '</span>' +
         '<span class="weekly-cover-stat rag-red"><b>' + ragCounts.Red + '</b> Red</span>' +
         '<span class="weekly-cover-stat rag-amber"><b>' + ragCounts.Amber + '</b> Amber</span>' +
@@ -2373,13 +2623,37 @@ async function showWeekly(initialEnding) {
     exportWrap.appendChild(front);
     app.appendChild(exportWrap);
 
+    const bubbles = new Map();
+    const railBadges = new Map();
+    let pane = null;
     function updateFollowUpCount() {
+      const open = items.reduce((n, it) => n + openThreadCount(it), 0);
       const el = cover.querySelector('.weekly-cover-followups');
-      if (!el) return;
-      const open = items.reduce((n, it) => n + (it.comments || []).filter((c) => !c.resolved).length, 0);
-      el.hidden = !open;
-      el.innerHTML = '<b>' + open + '</b> open comment' + (open === 1 ? '' : 's');
+      if (el) {
+        el.hidden = !open;
+        el.innerHTML = '<b>' + open + '</b> open comment' + (open === 1 ? '' : 's');
+      }
+      for (const it of items) {
+        const tid = (it.topic || {}).id;
+        const total = (it.comments || []).length;
+        const n = openThreadCount(it);
+        const bub = bubbles.get(tid);
+        if (bub) {
+          bub.classList.toggle('has-open', n > 0);
+          bub.classList.toggle('has-some', total > 0 && n === 0);
+          bub.querySelector('.cmt-bubble-n').textContent = n ? String(n) : (total ? '✓' : '+');
+          bub.title = n ? n + ' open comment' + (n === 1 ? '' : 's') + ' — open comments'
+            : (total ? 'All comments resolved — open comments' : 'Add a comment');
+        }
+        const rb = railBadges.get(tid);
+        if (rb) { rb.hidden = !n; rb.textContent = String(n); }
+      }
+      if (pane) pane.refresh();
     }
+    cover.querySelector('.weekly-cover-followups').addEventListener('click', () => {
+      const first = items.find((it) => openThreadCount(it) > 0);
+      if (first && pane) pane.open(first.topic.id);
+    });
 
     const layout = document.createElement('div');
     layout.className = 'weekly-layout';
@@ -2396,6 +2670,9 @@ async function showWeekly(initialEnding) {
       exportWrap.appendChild(layout);
       return;
     }
+
+    pane = createCommentsPane(items, data.week_ending, updateFollowUpCount);
+    app.appendChild(pane.el);
 
     /* Win D — topic jump rail (reporting order / sort_order — same as cards) */
     const rail = document.createElement('nav');
@@ -2423,7 +2700,9 @@ async function showWeekly(initialEnding) {
       const ragClass = rag ? ('rag-' + rag.toLowerCase()) : 'rag-none';
       btn.innerHTML =
         '<span class="jump-rail-dot ' + ragClass + '" aria-hidden="true"></span>' +
-        '<span class="jump-rail-label">' + escapeHtml(topic.name || 'Untitled') + '</span>';
+        '<span class="jump-rail-label">' + escapeHtml(topic.name || 'Untitled') + '</span>' +
+        '<span class="jump-rail-cmt" data-png-skip hidden></span>';
+      railBadges.set(tid, btn.querySelector('.jump-rail-cmt'));
       btn.addEventListener('click', () => {
         const target = document.getElementById('topic-' + tid);
         if (!target) return;
@@ -2484,6 +2763,18 @@ async function showWeekly(initialEnding) {
       topicPng.addEventListener('click', () =>
         exportPng(topicPng, () => section, (topic.name || 'topic') + '-' + data.week_ending));
       headEl.insertBefore(topicPng, statusWrap);
+      const bubble = document.createElement('button');
+      bubble.type = 'button';
+      bubble.className = 'cmt-bubble';
+      bubble.setAttribute('data-png-skip', '');
+      bubble.setAttribute('aria-label', 'Comments');
+      bubble.innerHTML = CMT_ICON.bubble + '<span class="cmt-bubble-n"></span>';
+      bubble.addEventListener('click', () => {
+        const existing = openThreadCount(item) || (item.comments || []).length;
+        if (existing) pane.open(topic.id, { noScroll: true }); else pane.openNew(topic.id);
+      });
+      bubbles.set(topic.id, bubble);
+      headEl.insertBefore(bubble, topicPng);
       section.appendChild(headEl);
 
       const isRisk = report.rag === 'Red' || report.rag === 'Amber';
@@ -2562,12 +2853,12 @@ async function showWeekly(initialEnding) {
       }
 
       section.appendChild(mainRow);
-      section.appendChild(buildFollowUps(item, data.week_ending, updateFollowUpCount));
       pack.appendChild(section);
     }
 
     layout.appendChild(pack);
     exportWrap.appendChild(layout);
+    updateFollowUpCount();
 
     /* Active topic while scrolling */
     const railItems = Array.from(railList.querySelectorAll('.jump-rail-item'));

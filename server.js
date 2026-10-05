@@ -36,7 +36,7 @@ const KEY_DATE_HEADERS = [
 
 const COMMENT_HEADERS = [
   'id', 'topic_id', 'week_ending', 'kind', 'author', 'body', 'resolved',
-  'created_at', 'updated_at'
+  'created_at', 'updated_at', 'parent_id'
 ];
 const VALID_COMMENT_KINDS = new Set(['comment', 'question']);
 
@@ -213,7 +213,7 @@ function saveReports(reports) {
 }
 
 function loadComments() {
-  return readCsv(COMMENTS_FILE).map((c) => ({ ...c, resolved: c.resolved === 'true' }));
+  return readCsv(COMMENTS_FILE).map((c) => ({ ...c, parent_id: c.parent_id || '', resolved: c.resolved === 'true' }));
 }
 
 function saveComments(comments) {
@@ -1156,19 +1156,29 @@ async function handleApi(req, res, pathname, url) {
     if (!VALID_COMMENT_KINDS.has(kind)) return sendError(res, 400, 'kind must be comment or question');
     if (!text) return sendError(res, 400, 'Comment text is required');
     if (text.length > 2000) return sendError(res, 400, 'Comment is too long (max 2000 characters)');
+    const rows = loadComments();
+    // A reply joins the thread of its root comment (threads are one level deep, like PowerPoint)
+    let parentId = String(body.parent_id || '').trim();
+    let weekEnding = weekEndingFridayContaining(week);
+    if (parentId) {
+      const parent = rows.find((c) => c.id === parentId && c.topic_id === topicId);
+      if (!parent) return sendError(res, 404, 'Comment to reply to not found');
+      parentId = parent.parent_id || parent.id;
+      weekEnding = parent.week_ending;
+    }
     const ts = nowIso();
     const row = {
       id: randomUUID(),
       topic_id: topicId,
-      week_ending: weekEndingFridayContaining(week),
+      week_ending: weekEnding,
       kind,
       author,
       body: text,
       resolved: false,
       created_at: ts,
-      updated_at: ts
+      updated_at: ts,
+      parent_id: parentId
     };
-    const rows = loadComments();
     rows.push(row);
     saveComments(rows);
     return sendJson(res, 201, row);
@@ -1181,16 +1191,32 @@ async function handleApi(req, res, pathname, url) {
     const rows = loadComments();
     const idx = rows.findIndex((c) => c.id === id);
     if (idx === -1) return sendError(res, 404, 'Comment not found');
-    if (body.resolved !== undefined) rows[idx].resolved = body.resolved === true || body.resolved === 'true';
-    rows[idx].updated_at = nowIso();
+    const row = rows[idx];
+    if (body.body !== undefined) {
+      if (row.author !== currentUser(req)) return sendError(res, 403, 'You can only edit your own comments');
+      const text = String(body.body).trim();
+      if (!text) return sendError(res, 400, 'Comment text is required');
+      if (text.length > 2000) return sendError(res, 400, 'Comment is too long (max 2000 characters)');
+      row.body = text;
+    }
+    if (body.resolved !== undefined) {
+      // Resolving applies to the whole thread, so always store it on the root comment
+      const resolved = body.resolved === true || body.resolved === 'true';
+      const rootId = row.parent_id || row.id;
+      for (const c of rows) if (c.id === rootId) { c.resolved = resolved; c.updated_at = nowIso(); }
+    }
+    row.updated_at = nowIso();
     saveComments(rows);
-    return sendJson(res, 200, rows[idx]);
+    return sendJson(res, 200, rows.find((c) => c.id === id));
   }
   if (commentItemMatch && method === 'DELETE') {
     const id = decodeURIComponent(commentItemMatch[1]);
     const rows = loadComments();
-    const next = rows.filter((c) => c.id !== id);
-    if (next.length === rows.length) return sendError(res, 404, 'Comment not found');
+    const target = rows.find((c) => c.id === id);
+    if (!target) return sendError(res, 404, 'Comment not found');
+    if (target.author !== currentUser(req)) return sendError(res, 403, 'You can only delete your own comments');
+    // Deleting a thread's first comment removes its replies too
+    const next = rows.filter((c) => c.id !== id && c.parent_id !== id);
     saveComments(next);
     return sendJson(res, 200, { ok: true });
   }
