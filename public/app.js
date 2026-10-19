@@ -185,8 +185,19 @@ function ragChip(rag) {
 
 // Loaded from /api/categories (managed on the Settings page); never hard-code names here.
 let CATEGORIES = [];
+let ROLES = []; // [{id, name}] from /api/roles (managed on the Settings page)
+async function loadRoleList() {
+  try { ROLES = await api('/api/roles'); } catch { /* keep previous list */ }
+}
+
 async function loadCategoryNames() {
   try { CATEGORIES = (await api('/api/categories')).map((c) => c.name); } catch { /* keep previous list */ }
+}
+
+function podChips(pod) {
+  if (!pod || !pod.length) return '';
+  return `<div class="pod-chips" aria-label="POD">${pod.map((m) =>
+    `<span class="pod-chip" title="${escapeHtml(m.role)}">${escapeHtml(m.name)} <em>${escapeHtml(m.role)}</em></span>`).join('')}</div>`;
 }
 
 function categoryTag(c) {
@@ -622,57 +633,79 @@ async function showSettings() {
   setHash('#settings');
   app.innerHTML = '<div class="loading">Loading settings…</div>';
   try {
-    renderSettings(await api('/api/categories'));
+    const [cats, roles] = await Promise.all([api('/api/categories'), api('/api/roles')]);
+    renderSettings(cats, roles);
   } catch (err) {
     app.innerHTML = `<div class="empty-state">Failed to load settings: ${escapeHtml(err.message)}</div>`;
   }
 }
 
-function renderSettings(cats) {
+function renderSettings(cats, roles) {
   CATEGORIES = cats.map((c) => c.name);
+  ROLES = roles;
   app.innerHTML = '';
   const head = document.createElement('div');
   head.className = 'page-head';
   head.innerHTML = `<div><h1>Settings</h1><p>Manage the lists used across the app.</p></div>`;
   app.appendChild(head);
 
+  app.appendChild(buildListCard({
+    title: 'Categories', noun: 'category', items: cats, countKey: 'topic_count', countNoun: 'topic',
+    endpoint: '/api/categories',
+    help: 'What kind of work a topic is. Renaming updates every topic that uses it. Order controls how categories appear in filters and charts.',
+    placeholder: 'Add a category, e.g. Initiative', reassignTo: 'name', reassignNone: 'Uncategorised'
+  }));
+  const rolesCard = buildListCard({
+    title: 'POD roles', noun: 'role', items: roles, countKey: 'member_count', countNoun: 'member',
+    endpoint: '/api/roles',
+    help: 'The roles a POD member can hold on a topic, e.g. Tech lead. Renaming updates every POD that uses it. Every topic needs a POD with at least one member.',
+    placeholder: 'Add a role, e.g. Architect', reassignTo: 'id', reassignNone: null
+  });
+  rolesCard.style.marginTop = '1rem';
+  app.appendChild(rolesCard);
+  app.appendChild(buildImportExportCard());
+}
+
+// A reorderable, renamable, deletable list (categories, roles). cfg.reassignTo is the item field the
+// DELETE ?reassign= param carries; reassignNone is the label for "leave blank" (null = a target is required).
+function buildListCard(cfg) {
+  const { items, endpoint, noun } = cfg;
   const card = document.createElement('section');
   card.className = 'panel settings-card';
   card.innerHTML = `
-    <h2 class="settings-title">Categories</h2>
-    <p class="settings-help">What kind of work a topic is. Renaming updates every topic that uses it. Order controls how categories appear in filters and charts.</p>
+    <h2 class="settings-title">${escapeHtml(cfg.title)}</h2>
+    <p class="settings-help">${escapeHtml(cfg.help)}</p>
     <ul class="cat-list"></ul>
     <form class="cat-add" autocomplete="off">
-      <label class="sr-only" for="cat-new">New category</label>
-      <input id="cat-new" type="text" maxlength="40" placeholder="Add a category, e.g. Initiative" />
+      <label class="sr-only">New ${noun}</label>
+      <input type="text" maxlength="40" placeholder="${escapeHtml(cfg.placeholder)}" />
       <button type="submit" class="btn btn-primary">Add</button>
     </form>`;
-  app.appendChild(card);
-  app.appendChild(buildImportExportCard());
   const ul = card.querySelector('.cat-list');
-  const refresh = () => showSettings();
   const run = async (fn, okMsg) => {
-    try { await fn(); if (okMsg) toast(okMsg); await refresh(); } catch (err) { toast(err.message, 'error'); await refresh(); }
+    try { await fn(); if (okMsg) toast(okMsg); await showSettings(); } catch (err) { toast(err.message, 'error'); await showSettings(); }
   };
+  const cap = noun[0].toUpperCase() + noun.slice(1);
 
-  if (!cats.length) ul.innerHTML = '<li class="cat-empty">No categories yet — add your first below.</li>';
-  cats.forEach((c, i) => {
+  if (!items.length) ul.innerHTML = `<li class="cat-empty">No ${noun}s yet — add your first below.</li>`;
+  items.forEach((c, i) => {
+    const n = c[cfg.countKey];
     const li = document.createElement('li');
     li.className = 'cat-row';
     li.innerHTML = `
       <div class="cat-move">
         <button type="button" class="icon-btn" data-up aria-label="Move ${escapeHtml(c.name)} up" ${i === 0 ? 'disabled' : ''}>▲</button>
-        <button type="button" class="icon-btn" data-down aria-label="Move ${escapeHtml(c.name)} down" ${i === cats.length - 1 ? 'disabled' : ''}>▼</button>
+        <button type="button" class="icon-btn" data-down aria-label="Move ${escapeHtml(c.name)} down" ${i === items.length - 1 ? 'disabled' : ''}>▼</button>
       </div>
-      <input class="cat-name" type="text" maxlength="40" value="${escapeHtml(c.name)}" aria-label="Category name" />
-      <span class="cat-count">${c.topic_count} topic${c.topic_count === 1 ? '' : 's'}</span>
+      <input class="cat-name" type="text" maxlength="40" value="${escapeHtml(c.name)}" aria-label="${cap} name" />
+      <span class="cat-count">${n} ${cfg.countNoun}${n === 1 ? '' : 's'}</span>
       <button type="button" class="btn btn-ghost btn-sm btn-danger-text" data-del>Delete</button>`;
     const input = li.querySelector('.cat-name');
     let busy = false;
     const rename = () => {
       const v = input.value.trim();
       if (!v) { input.value = c.name; return; }
-      if (v !== c.name && !busy) { busy = true; run(() => api('/api/categories/' + encodeURIComponent(c.id), { method: 'PATCH', body: JSON.stringify({ name: v }) }), 'Category renamed'); }
+      if (v !== c.name && !busy) { busy = true; run(() => api(endpoint + '/' + encodeURIComponent(c.id), { method: 'PATCH', body: JSON.stringify({ name: v }) }), cap + ' renamed'); }
     };
     input.addEventListener('blur', rename);
     input.addEventListener('keydown', (e) => {
@@ -680,23 +713,24 @@ function renderSettings(cats) {
       if (e.key === 'Escape') { input.value = c.name; input.blur(); }
     });
     const move = (d) => {
-      const ids = cats.map((x) => x.id);
+      const ids = items.map((x) => x.id);
       ids.splice(i + d, 0, ids.splice(i, 1)[0]);
-      run(() => api('/api/categories/order', { method: 'POST', body: JSON.stringify({ ids }) }));
+      run(() => api(endpoint + '/order', { method: 'POST', body: JSON.stringify({ ids }) }));
     };
     li.querySelector('[data-up]').addEventListener('click', () => move(-1));
     li.querySelector('[data-down]').addEventListener('click', () => move(1));
-    li.querySelector('[data-del]').addEventListener('click', () => confirmDeleteCategory(c, cats, run));
+    li.querySelector('[data-del]').addEventListener('click', () => confirmDeleteListItem(cfg, c, run));
     ul.appendChild(li);
   });
 
   card.querySelector('.cat-add').addEventListener('submit', (e) => {
     e.preventDefault();
-    const inp = card.querySelector('#cat-new');
+    const inp = card.querySelector('.cat-add input');
     const name = inp.value.trim();
     if (!name) return inp.focus();
-    run(() => api('/api/categories', { method: 'POST', body: JSON.stringify({ name }) }), 'Category added');
+    run(() => api(endpoint, { method: 'POST', body: JSON.stringify({ name }) }), cap + ' added');
   });
+  return card;
 }
 
 function buildImportExportCard() {
@@ -705,7 +739,7 @@ function buildImportExportCard() {
   card.style.marginTop = '1rem';
   card.innerHTML = `
     <h2 class="settings-title">Bulk import / export</h2>
-    <p class="settings-help"><strong>Topics:</strong> rows match an existing topic by <code>id</code> or <code>name</code> and update it (blank cells are left unchanged); other rows create new topics, which need <code>name</code>, <code>category</code> and <code>cadence</code>.</p>
+    <p class="settings-help"><strong>Topics:</strong> rows match an existing topic by <code>id</code> or <code>name</code> and update it (blank cells are left unchanged); other rows create new topics, which need <code>name</code>, <code>category</code>, <code>cadence</code> and <code>pod</code>. <code>pod</code> is a list of members like <code>A. Chen (Owner); B. Lee (Tech lead)</code> using roles from Settings; when given it replaces the POD.</p>
     <p class="settings-help"><strong>Reports</strong> (for historic data): the topic must already exist. Each row needs <code>topic</code> (name), <code>period_end</code> (a Friday, YYYY-MM-DD), <code>rag</code>, <code>trend</code> and <code>exec_summary</code>; <code>gtg_plan</code> is needed for Red/Amber. <code>period_start</code> defaults to the Monday. A row with the same topic and <code>period_end</code> updates that report. Plain text is fine in the narrative columns. Imported reports are dated by their period, so they never replace a newer report as the latest.</p>
     <div class="ie-row" data-kind="topics"><strong>Topics</strong>
       <a class="btn" href="api/topics.csv" download="topics.csv">Export CSV</a>
@@ -743,25 +777,29 @@ function buildImportExportCard() {
   return card;
 }
 
-function confirmDeleteCategory(cat, cats, run) {
-  const others = cats.filter((c) => c.id !== cat.id);
+function confirmDeleteListItem(cfg, item, run) {
+  const others = cfg.items.filter((c) => c.id !== item.id);
+  const n = item[cfg.countKey];
+  const required = cfg.reassignNone === null;
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
   backdrop.setAttribute('role', 'dialog');
   backdrop.setAttribute('aria-modal', 'true');
+  const blocked = required && n && !others.length;
   backdrop.innerHTML = `<div class="modal">
-    <h2>Delete “${escapeHtml(cat.name)}”?</h2>
-    ${cat.topic_count ? `<p>${cat.topic_count} topic${cat.topic_count === 1 ? ' uses' : 's use'} this category. Move ${cat.topic_count === 1 ? 'it' : 'them'} to:</p>
-    <div class="field"><select id="cat-reassign"><option value="">Uncategorised</option>${others.map((o) => `<option>${escapeHtml(o.name)}</option>`).join('')}</select></div>` : '<p>No topics use it.</p>'}
-    <div class="modal-actions"><button type="button" class="btn btn-ghost" data-cancel>Cancel</button><button type="button" class="btn btn-primary" data-ok>Delete</button></div></div>`;
+    <h2>Delete “${escapeHtml(item.name)}”?</h2>
+    ${n ? `<p>${n} ${cfg.countNoun}${n === 1 ? ' uses' : 's use'} this ${cfg.noun}. Move ${n === 1 ? 'it' : 'them'} to:</p>
+    <div class="field"><select id="list-reassign">${required ? '' : `<option value="">${escapeHtml(cfg.reassignNone)}</option>`}${others.map((o) => `<option value="${escapeHtml(o[cfg.reassignTo])}">${escapeHtml(o.name)}</option>`).join('')}</select></div>` : `<p>Nothing uses it.</p>`}
+    ${blocked ? `<p class="field-hint">Add another ${cfg.noun} first.</p>` : ''}
+    <div class="modal-actions"><button type="button" class="btn btn-ghost" data-cancel>Cancel</button><button type="button" class="btn btn-primary" data-ok ${blocked ? 'disabled' : ''}>Delete</button></div></div>`;
   const close = () => backdrop.remove();
   backdrop.querySelector('[data-cancel]').addEventListener('click', close);
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
   backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   backdrop.querySelector('[data-ok]').addEventListener('click', () => {
-    const sel = backdrop.querySelector('#cat-reassign');
+    const sel = backdrop.querySelector('#list-reassign');
     close();
-    run(() => api('/api/categories/' + encodeURIComponent(cat.id) + '?reassign=' + encodeURIComponent(sel ? sel.value : ''), { method: 'DELETE' }), 'Category deleted');
+    run(() => api(cfg.endpoint + '/' + encodeURIComponent(item.id) + '?reassign=' + encodeURIComponent(sel ? sel.value : ''), { method: 'DELETE' }), cfg.noun[0].toUpperCase() + cfg.noun.slice(1) + ' deleted');
   });
   document.body.appendChild(backdrop);
   backdrop.querySelector('[data-ok]').focus();
@@ -1286,6 +1324,12 @@ async function openTopicModal(existing = null, opts = {}) {
           <input id="topic-bu" type="text" autocomplete="off" value="${escapeHtml((existing && existing.business_unit) || '')}" />
         </div>
       </div>
+      <div class="field">
+        <label>POD <span class="req-mark" title="Required">*</span></label>
+        <div class="pod-edit" id="topic-pod"></div>
+        <button type="button" class="btn btn-ghost btn-sm" id="pod-add">+ Add member</button>
+        <p class="field-hint">The team delivering this topic: at least one member, each with a role. Roles are managed in Settings.</p>
+      </div>
       <div class="field-row">
         <div class="field">
           <label for="topic-cadence">Cadence</label>
@@ -1313,7 +1357,28 @@ async function openTopicModal(existing = null, opts = {}) {
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
   backdrop.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 
+  const podBox = backdrop.querySelector('#topic-pod');
+  const addPodRow = (m = {}) => {
+    const row = document.createElement('div');
+    row.className = 'pod-row';
+    row.innerHTML = `
+      <input type="text" class="pod-name" maxlength="80" placeholder="Name" autocomplete="off" aria-label="Member name" value="${escapeHtml(m.name || '')}" />
+      <select class="pod-role" aria-label="Role">
+        <option value=""${m.role_id ? '' : ' selected'} disabled>Role…</option>
+        ${ROLES.map((r) => `<option value="${escapeHtml(r.id)}"${m.role_id === r.id ? ' selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
+      </select>
+      <button type="button" class="icon-btn" aria-label="Remove member">✕</button>`;
+    row.querySelector('button').addEventListener('click', () => row.remove());
+    podBox.appendChild(row);
+    return row;
+  };
+  ((existing && existing.pod) || []).forEach(addPodRow);
+  if (!podBox.children.length) addPodRow();
+  backdrop.querySelector('#pod-add').addEventListener('click', () => addPodRow().querySelector('.pod-name').focus());
+
   backdrop.querySelector('[data-save]').addEventListener('click', async () => {
+    const pod = [...podBox.querySelectorAll('.pod-row')].map((r) => ({ name: r.querySelector('.pod-name').value.trim(), role_id: r.querySelector('.pod-role').value }))
+      .filter((m) => m.name || m.role_id);
     const name = backdrop.querySelector('#topic-name').value.trim();
     const description = backdrop.querySelector('#topic-description').value.trim();
     const cadenceVal = backdrop.querySelector('#topic-cadence').value;
@@ -1330,7 +1395,15 @@ async function openTopicModal(existing = null, opts = {}) {
       backdrop.querySelector('#topic-category').focus();
       return;
     }
-    const payload = { name, description, cadence: cadenceVal, owner, business_unit, category };
+    if (!pod.length) {
+      toast('Add at least one POD member', 'error');
+      return;
+    }
+    if (pod.some((m) => !m.name || !m.role_id)) {
+      toast('Every POD member needs a name and a role', 'error');
+      return;
+    }
+    const payload = { name, description, cadence: cadenceVal, owner, business_unit, category, pod };
     if (priorityRaw !== '') {
       const n = Number(priorityRaw);
       if (!Number.isFinite(n) || n < 1) {
@@ -1372,7 +1445,149 @@ function openNewTopicModal() {
 }
 
 
+async function loadTopicWithHistory(topicId) {
+  const topics = await api('/api/topics');
+  const topic = topics.find((t) => t.id === topicId);
+  if (!topic) return { topic: null, history: [] };
+  let history = [];
+  try {
+    history = await api(`/api/topics/${encodeURIComponent(topicId)}/reports`);
+    if (!Array.isArray(history)) history = [];
+  } catch {
+    history = [];
+  }
+  return { topic, history };
+}
+
+function topicHeadHtml(topic) {
+  const topicDesc = (topic.description || '').replace(/\s+/g, ' ').trim();
+  return `
+    <div>
+      <h1>${escapeHtml(topic.name)}</h1>
+      ${topicDesc ? `<p class="topic-page-desc">${escapeHtml(topicDesc)}</p>` : ''}
+      <p>
+        ${categoryTag(topic.category)}
+        ${cadenceText(topic.cadence)}
+        ${topic.owner ? `<span class="topic-owner"> · ${escapeHtml(topic.owner)}</span>` : ''}
+        ${topic.business_unit ? `<span class="topic-owner"> · ${escapeHtml(topic.business_unit)}</span>` : ''}
+      </p>
+      ${podChips(topic.pod)}
+    </div>`;
+}
+
+/** Topic page: header plus the list of reports; click a report to drill in. */
 async function showTopic(topicId) {
+  setNav('topics');
+  setHash('#topic=' + topicId);
+  app.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const { topic, history } = await loadTopicWithHistory(topicId);
+    if (!topic) {
+      app.innerHTML = '<div class="empty-state">Topic not found.</div>';
+      return;
+    }
+    app.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'page-head';
+    head.innerHTML = topicHeadHtml(topic);
+    const actions = document.createElement('div');
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'btn btn-ghost';
+    back.textContent = '← Topics';
+    back.addEventListener('click', () => showHome());
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'btn btn-ghost';
+    edit.textContent = 'Edit topic';
+    edit.addEventListener('click', () => openTopicModal(topic));
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'btn btn-primary';
+    add.textContent = 'New update';
+    add.addEventListener('click', () => showTopicUpdate(topic.id));
+    actions.append(back, ' ', edit, ' ', add);
+    head.appendChild(actions);
+    app.appendChild(head);
+
+    const panel = document.createElement('section');
+    panel.className = 'panel';
+    panel.innerHTML = `<h2><span class="panel-label">Reports</span></h2>`;
+    if (!history.length) {
+      panel.insertAdjacentHTML('beforeend', '<p class="report-empty">No reports yet for this topic.</p>');
+    }
+    const list = document.createElement('div');
+    list.className = 'topic-list';
+    for (const r of history) {
+      const summary = String(r.exec_summary || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const snippet = summary.length > 160 ? summary.slice(0, 157) + '…' : summary;
+      const row = document.createElement('div');
+      row.className = 'topic-list-row' + (r.rag ? ' rag-edge-' + r.rag : '');
+      row.tabIndex = 0;
+      row.style.cursor = 'pointer';
+      const open = () => showReport(topic.id, r.id);
+      row.addEventListener('click', open);
+      row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
+      row.innerHTML = `
+        <div class="topic-list-topic">
+          <div class="topic-list-name">${escapeHtml(historyPeriodLabel(r, topic.cadence))}</div>
+          ${snippet ? `<div class="topic-list-snippet">${escapeHtml(snippet)}</div>` : ''}
+        </div>
+        <div class="topic-list-status">${statusUnit(r.rag, r.trend)}</div>`;
+      list.appendChild(row);
+    }
+    panel.appendChild(list);
+    app.appendChild(panel);
+  } catch (err) {
+    app.innerHTML = `<div class="empty-state">Failed to load: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+/** Read-only view of a single report. */
+async function showReport(topicId, reportId) {
+  setNav('topics');
+  setHash('#topic=' + topicId + '/report=' + reportId);
+  app.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const { topic, history } = await loadTopicWithHistory(topicId);
+    const report = history.find((r) => r.id === reportId);
+    if (!topic || !report) {
+      app.innerHTML = '<div class="empty-state">Report not found.</div>';
+      return;
+    }
+    app.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'page-head';
+    head.innerHTML = `<div><h1>${escapeHtml(topic.name)}</h1>
+      <p>${escapeHtml(historyPeriodLabel(report, topic.cadence))} ${statusUnit(report.rag, report.trend)}</p></div>`;
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'btn btn-ghost';
+    back.textContent = '← ' + topic.name;
+    back.addEventListener('click', () => showTopic(topic.id));
+    head.appendChild(back);
+    app.appendChild(head);
+
+    const defs = [
+      ['Exec summary', report.exec_summary],
+      ['Achievements', report.achievements],
+      ['Next steps', report.next_steps]
+    ];
+    if (report.gtg_plan && !isEmptyRich(report.gtg_plan)) defs.push(['Get-to-green plan', report.gtg_plan]);
+    for (const [label, html] of defs) {
+      const sec = document.createElement('section');
+      sec.className = 'panel';
+      sec.innerHTML = `<h2><span class="panel-label">${escapeHtml(label)}</span></h2><div class="report-body">${html || '<p class="report-empty">—</p>'}</div>`;
+      app.appendChild(sec);
+    }
+  } catch (err) {
+    app.innerHTML = `<div class="empty-state">Failed to load: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function showTopicUpdate(topicId) {
   setNav('topics');
   app.innerHTML = '<div class="loading">Loading…</div>';
   try {
@@ -1703,6 +1918,7 @@ function renderTopicUpdate(topic, previous, history) {
         ${topic.owner ? `<span class="topic-owner"> · ${escapeHtml(topic.owner)}</span>` : ''}
         ${topic.business_unit ? `<span class="topic-owner"> · ${escapeHtml(topic.business_unit)}</span>` : ''}
       </p>
+      ${podChips(topic.pod)}
     </div>
   `;
   const editBtn = document.createElement('button');
@@ -2734,6 +2950,7 @@ async function showWeekly(initialEnding) {
       if (topic.business_unit) metaBits.push(escapeHtml(topic.business_unit));
       if (topic.category) metaBits.push(categoryTag(topic.category));
       if (topic.cadence) metaBits.push('<span class="cadence-text">' + escapeHtml(topic.cadence) + '</span>');
+      if (topic.pod && topic.pod.length) metaBits.push('POD: ' + topic.pod.map((m) => escapeHtml(m.name) + ' (' + escapeHtml(m.role) + ')').join(', '));
 
       const headEl = document.createElement('header');
       headEl.className = 'weekly-section-head';
@@ -3019,6 +3236,10 @@ function route() {
   } else if (h.startsWith('#weekly')) {
     const raw = h.startsWith('#weekly=') ? h.slice('#weekly='.length) : '';
     showWeekly(/^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : undefined);
+  } else if (h.startsWith('#topic=')) {
+    const [tid, rest] = h.slice('#topic='.length).split('/');
+    if (rest && rest.startsWith('report=')) showReport(tid, rest.slice('report='.length));
+    else showTopic(tid);
   } else if (h === '#topics') {
     showHome();
   } else if (h.startsWith('#calendar')) {
@@ -3039,5 +3260,5 @@ window.addEventListener('keydown', (e) => {
 });
 
 /* boot */
-loadCategoryNames().then(route);
+Promise.all([loadCategoryNames(), loadRoleList()]).then(route);
 

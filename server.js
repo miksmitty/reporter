@@ -16,6 +16,8 @@ const REPORTS_FILE = path.join(DATA_DIR, 'reports.csv');
 const KEY_DATES_FILE = path.join(DATA_DIR, 'key_dates.csv');
 const COMMENTS_FILE = path.join(DATA_DIR, 'comments.csv');
 const CATEGORIES_FILE = path.join(DATA_DIR, 'categories.csv');
+const ROLES_FILE = path.join(DATA_DIR, 'roles.csv');
+const POD_FILE = path.join(DATA_DIR, 'pod_members.csv');
 
 const TOPIC_HEADERS = [
   'id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence',
@@ -25,7 +27,7 @@ const REPORT_HEADERS = [
   'id', 'topic_id', 'period_start', 'period_end', 'exec_summary', 'achievements',
   'next_steps', 'rag', 'trend', 'gtg_plan', 'created_at', 'updated_at'
 ];
-const TOPIC_IMPORT_HEADERS = ['id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence', 'active'];
+const TOPIC_IMPORT_HEADERS = ['id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence', 'active', 'pod'];
 const REPORT_IMPORT_HEADERS = [
   'id', 'topic', 'period_start', 'period_end', 'rag', 'trend', 'exec_summary', 'achievements',
   'next_steps', 'gtg_plan', 'created_at'
@@ -44,6 +46,13 @@ const VALID_COMMENT_KINDS = new Set(['comment', 'question']);
 // page); this seeds the file the first time. Topics with no (or a removed) category show as Uncategorised.
 const CATEGORY_HEADERS = ['id', 'name', 'sort_order'];
 const DEFAULT_CATEGORIES = ['Project', 'POC', 'AI use case'];
+
+// Every topic is delivered by a POD: one or more members, each with a role. Roles are central data
+// (data/roles.csv, managed on the Settings page); members live in data/pod_members.csv and point at a
+// role by id, so renaming a role carries through everywhere.
+const ROLE_HEADERS = ['id', 'name', 'sort_order'];
+const DEFAULT_ROLES = ['Owner', 'Product owner', 'Delivery lead', 'Tech lead', 'Engineer', 'Data scientist', 'Business analyst', 'Sponsor'];
+const POD_HEADERS = ['id', 'topic_id', 'name', 'role_id', 'sort_order'];
 
 // Report calendar: a report covers the Mon-Fri week ending on a Friday and is due on that Friday
 // (weekly), every other Friday (fortnightly) or the last Friday of the month (monthly). Prep starts
@@ -179,9 +188,74 @@ function categoryNames() {
   return loadCategories().map((c) => c.name);
 }
 
+function loadRoles() {
+  if (!fs.existsSync(ROLES_FILE)) {
+    saveRoles(DEFAULT_ROLES.map((name, i) => ({ id: randomUUID(), name, sort_order: i + 1 })));
+  }
+  return readCsv(ROLES_FILE)
+    .map((r) => ({ id: r.id, name: String(r.name || '').trim(), sort_order: Number(r.sort_order) || 0 }))
+    .filter((r) => r.name)
+    .sort((a, b) => a.sort_order - b.sort_order);
+}
+
+function saveRoles(list) {
+  writeCsv(ROLES_FILE, ROLE_HEADERS, list.map((r, i) => ({ id: r.id, name: r.name, sort_order: String(i + 1) })));
+}
+
+function loadPodRows() {
+  if (!fs.existsSync(POD_FILE)) {
+    // First run: give every existing topic a POD seeded from its owner, so nothing is left without one.
+    const roles = loadRoles();
+    const ownerRole = roles.find((r) => r.name === 'Owner') || roles[0];
+    const rows = [];
+    for (const t of readCsv(TOPICS_FILE)) {
+      const owner = String(t.owner || '').trim();
+      if (owner && ownerRole) rows.push({ id: randomUUID(), topic_id: t.id, name: owner, role_id: ownerRole.id, sort_order: '1' });
+    }
+    writeCsv(POD_FILE, POD_HEADERS, rows);
+  }
+  return readCsv(POD_FILE);
+}
+
+function savePodRows(rows) {
+  writeCsv(POD_FILE, POD_HEADERS, rows);
+}
+
+// Replace a topic's POD. members: [{name, role_id}] (already validated).
+function setPod(topicId, members) {
+  const rows = loadPodRows().filter((r) => r.topic_id !== topicId);
+  members.forEach((m, i) => rows.push({ id: randomUUID(), topic_id: topicId, name: m.name, role_id: m.role_id, sort_order: String(i + 1) }));
+  savePodRows(rows);
+}
+
+// Validate a POD payload: at least one member, each with a name and a known role.
+function parsePod(input) {
+  const roles = loadRoles();
+  const list = Array.isArray(input) ? input : [];
+  const members = [];
+  for (const m of list) {
+    const name = String((m && m.name) || '').trim().slice(0, 80);
+    if (!name && !(m && m.role_id)) continue; // blank row
+    const role = roles.find((r) => r.id === (m && m.role_id));
+    if (!name) return { error: 'Every POD member needs a name' };
+    if (!role) return { error: `Choose a role for ${name}` };
+    members.push({ name, role_id: role.id });
+  }
+  if (!members.length) return { error: 'A topic needs a POD with at least one member' };
+  return { members };
+}
+
 function loadTopics() {
   const known = new Set(categoryNames());
+  const roleName = new Map(loadRoles().map((r) => [r.id, r.name]));
+  const pods = new Map();
+  for (const r of loadPodRows().sort((a, b) => Number(a.sort_order) - Number(b.sort_order))) {
+    if (!roleName.has(r.role_id)) continue;
+    if (!pods.has(r.topic_id)) pods.set(r.topic_id, []);
+    pods.get(r.topic_id).push({ id: r.id, name: r.name, role_id: r.role_id, role: roleName.get(r.role_id) });
+  }
   return readCsv(TOPICS_FILE).map((t) => ({
+    pod: pods.get(t.id) || [],
     ...t,
     description: t.description != null ? String(t.description) : '',
     business_unit: t.business_unit != null ? String(t.business_unit) : '',
@@ -736,6 +810,60 @@ async function handleApi(req, res, pathname, url) {
     return sendJson(res, 200, { ok: true });
   }
 
+  if (pathname === '/api/roles' && method === 'GET') {
+    const used = {};
+    for (const r of loadPodRows()) used[r.role_id] = (used[r.role_id] || 0) + 1;
+    return sendJson(res, 200, loadRoles().map((r) => ({ ...r, member_count: used[r.id] || 0 })));
+  }
+
+  if (pathname === '/api/roles' && method === 'POST') {
+    const body = await readBody(req);
+    const name = String(body.name || '').trim().slice(0, 40);
+    if (!name) return sendError(res, 400, 'name is required');
+    const list = loadRoles();
+    if (list.some((r) => r.name.toLowerCase() === name.toLowerCase())) return sendError(res, 409, 'That role already exists');
+    list.push({ id: randomUUID(), name });
+    saveRoles(list);
+    return sendJson(res, 201, { ok: true });
+  }
+
+  if (pathname === '/api/roles/order' && method === 'POST') {
+    const body = await readBody(req);
+    const list = loadRoles();
+    const ids = Array.isArray(body.ids) ? body.ids : [];
+    const sorted = ids.map((id) => list.find((r) => r.id === id)).filter(Boolean);
+    for (const r of list) if (!sorted.includes(r)) sorted.push(r);
+    saveRoles(sorted);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  const roleMatch = pathname.match(/^\/api\/roles\/([^/]+)$/);
+  if (roleMatch && (method === 'PATCH' || method === 'DELETE')) {
+    const id = decodeURIComponent(roleMatch[1]);
+    const list = loadRoles();
+    const role = list.find((r) => r.id === id);
+    if (!role) return sendError(res, 404, 'Role not found');
+    if (method === 'PATCH') {
+      const body = await readBody(req);
+      const name = String(body.name || '').trim().slice(0, 40);
+      if (!name) return sendError(res, 400, 'name is required');
+      if (list.some((r) => r.id !== id && r.name.toLowerCase() === name.toLowerCase())) return sendError(res, 409, 'That role already exists');
+      role.name = name;
+    } else {
+      const rows = loadPodRows();
+      const inUse = rows.filter((r) => r.role_id === id);
+      if (inUse.length) {
+        const to = (url.searchParams.get('reassign') || '').trim();
+        if (!to || !list.some((r) => r.id !== id && r.id === to)) return sendError(res, 409, 'Choose a role to move the members to');
+        for (const r of inUse) r.role_id = to;
+        savePodRows(rows);
+      }
+      list.splice(list.indexOf(role), 1);
+    }
+    saveRoles(list);
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (pathname === '/api/dashboard' && method === 'GET') {
     return sendJson(res, 200, dashboardBundle((url.searchParams.get('category') || '').trim()));
   }
@@ -754,7 +882,7 @@ async function handleApi(req, res, pathname, url) {
     const rows = loadTopics()
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
-      .map((t) => ({ ...t, active: t.active ? 'true' : 'false' }));
+      .map((t) => ({ ...t, active: t.active ? 'true' : 'false', pod: t.pod.map((m) => `${m.name} (${m.role})`).join('; ') }));
     // BOM so Excel reads UTF-8 correctly.
     const body = Buffer.from('﻿' + serializeCsv(TOPIC_IMPORT_HEADERS, rows), 'utf8');
     res.writeHead(200, {
@@ -777,7 +905,9 @@ async function handleApi(req, res, pathname, url) {
     if (!rows.length) return sendError(res, 400, 'No data rows found');
     if (!('name' in rows[0])) return sendError(res, 400, 'The CSV needs a "name" column');
     const cats = categoryNames();
+    const roles = loadRoles();
     const topics = loadTopics();
+    const podUpdates = []; // [topicId, members]
     const byId = new Map(topics.map((t) => [t.id, t]));
     const byName = new Map(topics.map((t) => [t.name.toLowerCase(), t]));
     let maxSort = topics.reduce((m, t) => Math.max(m, t.sort_order || 0), 0);
@@ -797,6 +927,19 @@ async function handleApi(req, res, pathname, url) {
       if (activeRaw && !['true', 'false', 'yes', 'no', '1', '0'].includes(activeRaw)) return result.errors.push({ line, message: 'active must be true or false' });
       if (!existing && !cadence) return result.errors.push({ line, message: 'cadence is required for new topics' });
       if (!existing && !category) return result.errors.push({ line, message: 'category is required for new topics' });
+      // pod: "Name (Role); Name (Role)". Replaces the POD when given; required for new topics.
+      let podMembers = null;
+      if (get('pod')) {
+        podMembers = [];
+        for (const part of get('pod').split(/[;\n]/).map((x) => x.trim()).filter(Boolean)) {
+          const m = part.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
+          const role = m && roles.find((x) => x.name.toLowerCase() === m[2].trim().toLowerCase());
+          if (!m || !m[1].trim()) { podMembers = null; return result.errors.push({ line, message: `pod entry "${part}" must look like Name (Role)` }); }
+          if (!role) { podMembers = null; return result.errors.push({ line, message: `unknown role "${m[2].trim()}" in pod` }); }
+          podMembers.push({ name: m[1].trim(), role_id: role.id });
+        }
+      }
+      if (!existing && !podMembers) return result.errors.push({ line, message: 'pod is required for new topics, e.g. "A. Chen (Owner); B. Lee (Engineer)"' });
       const active = ['true', 'yes', '1'].includes(activeRaw);
       const ts = nowIso();
       if (existing) {
@@ -806,6 +949,7 @@ async function handleApi(req, res, pathname, url) {
         if (category) existing.category = category;
         if (activeRaw) existing.active = active;
         existing.updated_at = ts;
+        if (podMembers) podUpdates.push([existing.id, podMembers]);
         result.updated++;
       } else {
         const topic = {
@@ -816,10 +960,14 @@ async function handleApi(req, res, pathname, url) {
         topics.push(topic);
         byId.set(topic.id, topic);
         byName.set(name.toLowerCase(), topic);
+        podUpdates.push([topic.id, podMembers]);
         result.created++;
       }
     });
-    if (result.created || result.updated) saveTopics(topics);
+    if (result.created || result.updated) {
+      saveTopics(topics);
+      for (const [tid, members] of podUpdates) setPod(tid, members);
+    }
     return sendJson(res, 200, result);
   }
 
@@ -836,6 +984,8 @@ async function handleApi(req, res, pathname, url) {
     if (!VALID_CADENCES.has(cadence)) {
       return sendError(res, 400, 'cadence must be weekly, fortnightly, or monthly');
     }
+    const pod = parsePod(body.pod);
+    if (pod.error) return sendError(res, 400, pod.error);
     const topics = loadTopics();
     const maxSort = topics.reduce((m, t) => Math.max(m, t.sort_order || 0), 0);
     const ts = nowIso();
@@ -854,7 +1004,8 @@ async function handleApi(req, res, pathname, url) {
     };
     topics.push(topic);
     saveTopics(topics);
-    return sendJson(res, 201, { ...topic, latest_report: null });
+    setPod(topic.id, pod.members);
+    return sendJson(res, 201, { ...loadTopics().find((x) => x.id === topic.id), latest_report: null });
   }
 
   const topicMatch = pathname.match(/^\/api\/topics\/([^/]+)$/);
@@ -880,6 +1031,11 @@ async function handleApi(req, res, pathname, url) {
       if (!categoryNames().includes(body.category)) return sendError(res, 400, 'Choose a valid category');
       t.category = body.category;
     }
+    if (body.pod !== undefined) {
+      const pod = parsePod(body.pod);
+      if (pod.error) return sendError(res, 400, pod.error);
+      setPod(id, pod.members);
+    }
     if (body.owner !== undefined) t.owner = String(body.owner).trim();
     if (body.description !== undefined) t.description = String(body.description).trim();
     if (body.business_unit !== undefined) t.business_unit = String(body.business_unit).trim();
@@ -888,7 +1044,7 @@ async function handleApi(req, res, pathname, url) {
     t.updated_at = nowIso();
     topics[idx] = t;
     saveTopics(topics);
-    return sendJson(res, 200, { ...t, latest_report: latestReport(t.id) });
+    return sendJson(res, 200, { ...loadTopics().find((x) => x.id === id), latest_report: latestReport(t.id) });
   }
 
   if (pathname === '/api/reports.csv' && method === 'GET') {

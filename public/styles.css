@@ -2368,3 +2368,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
 .cat-add { display: flex; gap: 0.6rem; }
 .cat-add input { flex: 1; }
 .cat-empty { padding: 1rem; color: var(--text-muted); }
+
+/* POD */
+.pod-edit { display: grid; gap: 0.45rem; margin-bottom: 0.5rem; }
+.pod-row { display: grid; grid-template-columns: 1fr 11rem auto; gap: 0.5rem; align-items: center; }
+.pod-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.55rem; }
+.pod-chip { display: inline-flex; gap: 0.35rem; align-items: baseline; padding: 0.15rem 0.6rem; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-soft); font-size: 0.82rem; font-weight: 600; }
+.pod-chip em { font-style: normal; font-weight: 500; color: var(--text-faint); }
