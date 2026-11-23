@@ -20,18 +20,20 @@ const ROLES_FILE = path.join(DATA_DIR, 'roles.csv');
 const POD_FILE = path.join(DATA_DIR, 'pod_members.csv');
 
 const TOPIC_HEADERS = [
-  'id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence',
+  'id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence', 'due_day',
   'active', 'sort_order', 'created_at', 'updated_at'
 ];
 const REPORT_HEADERS = [
   'id', 'topic_id', 'period_start', 'period_end', 'exec_summary', 'achievements',
   'next_steps', 'rag', 'trend', 'gtg_plan', 'created_at', 'updated_at'
 ];
-const TOPIC_IMPORT_HEADERS = ['id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence', 'active', 'pod'];
+const TOPIC_IMPORT_HEADERS = ['id', 'name', 'description', 'owner', 'business_unit', 'category', 'cadence', 'due_day', 'active', 'pod'];
 const REPORT_IMPORT_HEADERS = [
   'id', 'topic', 'period_start', 'period_end', 'rag', 'trend', 'exec_summary', 'achievements',
   'next_steps', 'gtg_plan', 'created_at'
 ];
+const KEY_DATE_IMPORT_HEADERS = ['id', 'topic', 'date', 'description'];
+const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const KEY_DATE_HEADERS = [
   'id', 'topic_id', 'date', 'description', 'created_at', 'updated_at'
 ];
@@ -245,6 +247,12 @@ function parsePod(input) {
   return { members };
 }
 
+/** Weekday a topic's update is due: 1 (Mon) … 5 (Fri, the default). */
+function validDueDay(v) {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 5;
+}
+
 function loadTopics() {
   const known = new Set(categoryNames());
   const roleName = new Map(loadRoles().map((r) => [r.id, r.name]));
@@ -261,6 +269,7 @@ function loadTopics() {
     business_unit: t.business_unit != null ? String(t.business_unit) : '',
     owner: t.owner != null ? String(t.owner) : '',
     category: known.has(t.category) ? t.category : '',
+    due_day: validDueDay(t.due_day),
     active: t.active === 'true' || t.active === true,
     sort_order: Number(t.sort_order) || 0
   }));
@@ -368,6 +377,17 @@ function sendJson(res, status, body) {
 
 function sendError(res, status, message) {
   sendJson(res, status, { error: message });
+}
+
+function sendCsv(res, filename, text) {
+  const body = Buffer.from('\ufeff' + text, 'utf8'); // BOM so Excel reads UTF-8
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+    'Content-Length': body.length,
+    'Cache-Control': 'no-store'
+  });
+  res.end(body);
 }
 
 function readBody(req) {
@@ -536,7 +556,14 @@ function weeklyBundle(weekEnding) {
     const comments = allComments
       .filter((c) => c.topic_id === topic.id && c.week_ending === friday)
       .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-    items.push({ topic, report: matches[0], key_dates, comments });
+    const rag_history = [-49, -42, -35, -28, -21, -14, -7, 0].map((d) => {
+      const wk = addDaysIso(friday, d);
+      const r = allReports
+        .filter((x) => x.topic_id === topic.id && x.period_end && weekEndingFridayContaining(x.period_end) === wk)
+        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))[0];
+      return { week: wk, rag: r ? r.rag : '' };
+    });
+    items.push({ topic, report: matches[0], key_dates, comments, rag_history });
   }
   const weekSet = new Set();
   for (const r of allReports) {
@@ -622,11 +649,14 @@ function calendarBundle(month) { // YYYY-MM
     // Look a few days past the grid so prep for a due date just after it is still shown.
     const newest = sortedByWeekDesc(reports)[0];
     const completedWeek = newest && newest.rag === 'Blue' ? reportWeek(newest) : '';
-    for (const due of dueDatesFor(topic, reports, gridFrom, addDaysIso(gridTo, 7))) {
+    for (let due of dueDatesFor(topic, reports, gridFrom, addDaysIso(gridTo, 7))) {
       if (completedWeek && due > completedWeek) continue;
+      // `friday` identifies the reporting week; the topic's due weekday falls in that same Mon–Fri week.
+      const friday = due;
+      due = addDaysIso(friday, validDueDay(topic.due_day) - 5);
       const prep = subWorkingDays(due, PREP_LEAD_DAYS);
-      const status = submittedFor.has(due) ? 'submitted' : (due < today ? 'overdue' : 'open');
-      const base = { topic_id: topic.id, topic_name: topic.name, category: topic.category, cadence: topic.cadence, owner: topic.owner, status, due_date: due, prep_date: prep };
+      const status = submittedFor.has(friday) ? 'submitted' : (due < today ? 'overdue' : 'open');
+      const base = { topic_id: topic.id, topic_name: topic.name, category: topic.category, cadence: topic.cadence, due_day: validDueDay(topic.due_day), owner: topic.owner, status, due_date: due, prep_date: prep };
       if (due >= gridFrom && due <= gridTo) events.push({ ...base, type: 'due', date: due });
       if (prep >= gridFrom && prep <= gridTo) events.push({ ...base, type: 'prep', date: prep });
     }
@@ -685,7 +715,67 @@ function dashboardBundle(category) {
   const overdue = events.filter((e) => topicIds.has(e.topic_id) && e.type === 'due' && e.status === 'overdue');
   const upcoming = events.filter((e) => topicIds.has(e.topic_id) && e.date >= today && e.date <= horizon && e.status !== 'submitted');
 
-  return { today, week_ending: thisFriday, trend, categories, movements: movements.slice(0, 8), overdue, upcoming, prep_lead_days: PREP_LEAD_DAYS };
+  // Per-topic heatmap: the RAG filed for each of the last 8 weeks. "carried" = no report that
+  // week, so the previous status still stands.
+  const weeks = trend.map((w) => w.week_ending);
+  const heatmap = topics.map((t) => {
+    const reps = byTopic.get(t.id);
+    const cells = weeks.map((friday) => {
+      if (droppedBefore(reps, friday)) return { week_ending: friday, rag: '' };
+      const asOf = reps.find((r) => reportWeek(r) <= friday);
+      if (!asOf) return { week_ending: friday, rag: '' };
+      return { week_ending: friday, rag: asOf.rag, carried: reportWeek(asOf) !== friday };
+    });
+    return { topic_id: t.id, topic_name: t.name, owner: t.owner, cadence: t.cadence, cells };
+  });
+
+  // Business-unit breakdown, same shape as categories.
+  const units = {};
+  for (const t of topics) {
+    const cur = byTopic.get(t.id)[0];
+    const key = t.business_unit || 'Unassigned';
+    units[key] = units[key] || { Red: 0, Amber: 0, Green: 0, Blue: 0, none: 0 };
+    units[key][cur && units[key][cur.rag] !== undefined ? cur.rag : 'none'] += 1;
+  }
+
+  // This week's pack: topics due this Friday vs. those already reported.
+  let dueThisWeek = 0;
+  let inThisWeek = 0;
+  for (const t of topics) {
+    const reps = allReports.filter((r) => r.topic_id === t.id);
+    if (!dueDatesFor(t, reps, thisFriday, thisFriday).length) continue;
+    const latest = byTopic.get(t.id)[0];
+    if (latest && latest.rag === 'Blue' && reportWeek(latest) < thisFriday) continue;
+    dueThisWeek += 1;
+    if (reps.some((r) => reportWeek(r) === thisFriday)) inThisWeek += 1;
+  }
+
+  // Open review comments (unresolved top-level threads), grouped by topic.
+  const openByTopic = new Map();
+  for (const c of loadComments()) {
+    if (c.parent_id || c.resolved || !topicIds.has(c.topic_id)) continue;
+    const o = openByTopic.get(c.topic_id) || { open: 0, week_ending: '' };
+    o.open += 1;
+    if (c.week_ending > o.week_ending) o.week_ending = c.week_ending;
+    openByTopic.set(c.topic_id, o);
+  }
+  const comments = topics.filter((t) => openByTopic.has(t.id))
+    .map((t) => ({ topic_id: t.id, topic_name: t.name, ...openByTopic.get(t.id) }))
+    .sort((a, b) => b.open - a.open || b.week_ending.localeCompare(a.week_ending));
+
+  // Key dates (milestones) coming up in the next 30 days.
+  const msHorizon = addDaysIso(today, 30);
+  const nameById = new Map(topics.map((t) => [t.id, t]));
+  const milestones = loadKeyDates()
+    .filter((k) => nameById.has(k.topic_id) && k.date >= today && k.date <= msHorizon)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, 8)
+    .map((k) => ({ topic_id: k.topic_id, topic_name: nameById.get(k.topic_id).name, date: k.date, description: k.description, days: Math.round((Date.parse(k.date) - Date.parse(today)) / 86400000) }));
+
+  return {
+    today, week_ending: thisFriday, trend, categories, units, heatmap, movements: movements.slice(0, 8), overdue, upcoming,
+    this_week: { due: dueThisWeek, in: inThisWeek }, comments, milestones, prep_lead_days: PREP_LEAD_DAYS
+  };
 }
 
 function stripHtml(html) {
@@ -694,6 +784,24 @@ function stripHtml(html) {
 
 function isEmptyRich(html) {
   return !stripHtml(html);
+}
+
+/** Validate a report payload (create or edit). Returns the cleaned fields or { error }. */
+function parseReportBody(body) {
+  const period_start = (body.period_start || '').trim();
+  const period_end = (body.period_end || '').trim();
+  const exec_summary = body.exec_summary || '';
+  const achievements = body.achievements || '';
+  const next_steps = body.next_steps || '';
+  const rag = (body.rag || '').trim();
+  const trend = (body.trend || '').trim();
+  const gtg_plan = body.gtg_plan || '';
+  if (!period_start || !period_end) return { error: 'period_start and period_end are required' };
+  if (!VALID_RAG.has(rag)) return { error: 'rag must be Red, Amber, Green, or Blue' };
+  if (!VALID_TREND.has(trend)) return { error: 'trend must be Improving, Stable, or Declining' };
+  if (isEmptyRich(exec_summary)) return { error: 'exec_summary is required' };
+  if (rag !== 'Green' && rag !== 'Blue' && isEmptyRich(gtg_plan)) return { error: 'gtg_plan is required when RAG is Red or Amber' };
+  return { period_start, period_end, exec_summary, achievements, next_steps, rag, trend, gtg_plan: (rag === 'Green' || rag === 'Blue') ? '' : gtg_plan };
 }
 
 // ── API handlers ────────────────────────────────────────────────────────────
@@ -874,6 +982,174 @@ async function handleApi(req, res, pathname, url) {
     return sendJson(res, 200, calendarBundle(month));
   }
 
+
+  // ── Key dates: CSV export / import / templates ──
+  if (pathname === '/api/key-dates.csv' && method === 'GET') {
+    const names = new Map(loadTopics().map((t) => [t.id, t.name]));
+    const rows = loadKeyDates()
+      .filter((k) => names.has(k.topic_id))
+      .map((k) => ({ ...k, topic: names.get(k.topic_id) }))
+      .sort((a, b) => a.topic.localeCompare(b.topic) || a.date.localeCompare(b.date));
+    return sendCsv(res, 'key_dates.csv', serializeCsv(KEY_DATE_IMPORT_HEADERS, rows));
+  }
+
+  if (pathname === '/api/key-dates/import' && method === 'POST') {
+    const body = await readBody(req);
+    const text = String(body.csv || '').replace(/^﻿/, '');
+    if (!text.trim()) return sendError(res, 400, 'The CSV is empty');
+    const rows = parseCsv(text);
+    if (!rows.length) return sendError(res, 400, 'No data rows found');
+    if (!('date' in rows[0]) || !('topic' in rows[0] || 'topic_id' in rows[0])) return sendError(res, 400, 'The CSV needs "topic" (name) and "date" columns');
+    const topics = loadTopics();
+    const result = { created: 0, updated: 0, errors: [] };
+    const all = loadKeyDates();
+    rows.forEach((r, i) => {
+      const line = i + 2;
+      const get = (k) => String(r[k] == null ? '' : r[k]).trim();
+      const err = (message) => result.errors.push({ line, message });
+      const topic = topics.find((t) => t.id === get('topic_id')) || topics.find((t) => t.name.toLowerCase() === get('topic').toLowerCase());
+      if (!topic) return err(`unknown topic "${get('topic') || get('topic_id')}" (create it first)`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(get('date')) || Number.isNaN(Date.parse(get('date')))) return err('date must be YYYY-MM-DD');
+      if (!get('description')) return err('description is required');
+      const ts = nowIso();
+      const existing = (get('id') && all.find((k) => k.id === get('id'))) ||
+        all.find((k) => k.topic_id === topic.id && k.date === get('date') && k.description.toLowerCase() === get('description').toLowerCase());
+      if (existing) { Object.assign(existing, { topic_id: topic.id, date: get('date'), description: get('description'), updated_at: ts }); result.updated++; }
+      else { all.push({ id: randomUUID(), topic_id: topic.id, date: get('date'), description: get('description'), created_at: ts, updated_at: ts }); result.created++; }
+    });
+    if (result.created || result.updated) saveKeyDates(all);
+    return sendJson(res, 200, result);
+  }
+
+  // Blank CSV templates with one example row.
+  const tplMatch = pathname.match(/^\/api\/templates\/(topics|reports|key-dates)\.csv$/);
+  if (tplMatch && method === 'GET') {
+    const kind = tplMatch[1];
+    const cat = categoryNames()[0] || 'AI use case';
+    const role = (loadRoles()[0] || {}).name || 'Owner';
+    const spec = {
+      topics: [TOPIC_IMPORT_HEADERS, { name: 'Example topic', description: 'What it is', owner: 'A. Chen', business_unit: 'Claims', category: cat, cadence: 'weekly', due_day: 'Friday', active: 'true', pod: `A. Chen (${role})` }],
+      reports: [REPORT_IMPORT_HEADERS, { topic: 'Example topic', period_start: '2026-01-05', period_end: '2026-01-09', rag: 'Green', trend: 'Stable', exec_summary: 'On track.', achievements: 'Shipped X', next_steps: 'Do Y', gtg_plan: '' }],
+      'key-dates': [KEY_DATE_IMPORT_HEADERS, { topic: 'Example topic', date: '2026-03-31', description: 'Go live' }]
+    }[kind];
+    return sendCsv(res, kind.replace('-', '_') + '_template.csv', serializeCsv(spec[0], [spec[1]]));
+  }
+
+  // ── Full backup (JSON): everything needed to rebuild or merge into another instance ──
+  if (pathname === '/api/backup.json' && method === 'GET') {
+    const roleName = new Map(loadRoles().map((r) => [r.id, r.name]));
+    const topics = loadTopics().map((t) => ({
+      id: t.id, name: t.name, description: t.description, owner: t.owner, business_unit: t.business_unit,
+      category: t.category, cadence: t.cadence, due_day: validDueDay(t.due_day), active: t.active, sort_order: t.sort_order,
+      created_at: t.created_at, updated_at: t.updated_at,
+      pod: t.pod.map((m) => ({ name: m.name, role: roleName.get(m.role_id) || m.role }))
+    }));
+    const payload = {
+      app: 'reporter', version: 1, exported_at: nowIso(),
+      categories: loadCategories().map((c) => c.name), roles: loadRoles().map((r) => r.name),
+      topics, reports: loadReports(), key_dates: loadKeyDates(), comments: loadComments()
+    };
+    const out = Buffer.from(JSON.stringify(payload, null, 2), 'utf8');
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="reporter-backup-${todayUTC()}.json"`,
+      'Content-Length': out.length, 'Cache-Control': 'no-store'
+    });
+    return res.end(out);
+  }
+
+  // Restore/merge: body { backup } (object or JSON string). Everything is matched by id (topics also by
+  // name, categories/roles by name) and upserted, so it is safe to re-run and never deletes anything.
+  if (pathname === '/api/backup/import' && method === 'POST') {
+    const body = await readBody(req);
+    let b = body.backup;
+    if (typeof b === 'string') { try { b = JSON.parse(b.replace(/^﻿/, '')); } catch { return sendError(res, 400, 'That file is not valid JSON'); } }
+    if (!b || b.app !== 'reporter' || !Array.isArray(b.topics)) return sendError(res, 400, 'That is not a Reporter backup file');
+    const counts = () => ({ created: 0, updated: 0, skipped: 0 });
+    const result = { categories: counts(), roles: counts(), topics: counts(), reports: counts(), key_dates: counts(), comments: counts(), errors: [] };
+    const err = (m) => result.errors.push({ message: m });
+    const isId = (v) => typeof v === 'string' && v.length >= 8 && v.length <= 64;
+    const str = (v) => (v == null ? '' : String(v));
+    const isDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d);
+
+    const cats = loadCategories();
+    for (const n of (b.categories || []).map((x) => str(x).trim()).filter(Boolean)) {
+      if (cats.some((c) => c.name.toLowerCase() === n.toLowerCase())) { result.categories.skipped++; continue; }
+      cats.push({ id: randomUUID(), name: n, sort_order: cats.length + 1 }); result.categories.created++;
+    }
+    if (result.categories.created) saveCategories(cats);
+    const roles = loadRoles();
+    for (const n of (b.roles || []).map((x) => str(x).trim()).filter(Boolean)) {
+      if (roles.some((r) => r.name.toLowerCase() === n.toLowerCase())) { result.roles.skipped++; continue; }
+      roles.push({ id: randomUUID(), name: n, sort_order: roles.length + 1 }); result.roles.created++;
+    }
+    if (result.roles.created) saveRoles(roles);
+
+    const topics = loadTopics();
+    const idMap = new Map(); // backup topic id -> local topic id
+    const podUpdates = [];
+    let maxSort = topics.reduce((m, t) => Math.max(m, t.sort_order || 0), 0);
+    for (const bt of b.topics) {
+      const name = str(bt && bt.name).trim();
+      if (!name) { result.topics.skipped++; err('A topic without a name was skipped'); continue; }
+      const cadence = str(bt.cadence).toLowerCase();
+      if (!VALID_CADENCES.has(cadence)) { result.topics.skipped++; err(`Topic "${name}": invalid cadence "${bt.cadence}"`); continue; }
+      const category = cats.find((c) => c.name.toLowerCase() === str(bt.category).toLowerCase());
+      const podIn = Array.isArray(bt.pod) ? bt.pod : [];
+      const members = podIn.map((m) => ({ name: str(m && m.name).trim(), role: roles.find((r) => r.name.toLowerCase() === str(m && m.role).trim().toLowerCase()) })).filter((m) => m.name && m.role).map((m) => ({ name: m.name, role_id: m.role.id }));
+      const existing = topics.find((t) => t.id === bt.id) || topics.find((t) => t.name.toLowerCase() === name.toLowerCase());
+      const ts = nowIso();
+      const fields = { name, description: str(bt.description), owner: str(bt.owner), business_unit: str(bt.business_unit), cadence, due_day: validDueDay(bt.due_day), active: bt.active !== false && bt.active !== 'false' };
+      if (existing) {
+        Object.assign(existing, fields, { updated_at: ts });
+        if (category) existing.category = category.name;
+        if (members.length) podUpdates.push([existing.id, members]);
+        idMap.set(bt.id, existing.id); result.topics.updated++;
+      } else {
+        if (!category) { result.topics.skipped++; err(`Topic "${name}": unknown category "${bt.category}"`); continue; }
+        if (!members.length) { result.topics.skipped++; err(`Topic "${name}": needs a POD with at least one member`); continue; }
+        const id = isId(bt.id) && !topics.some((t) => t.id === bt.id) ? bt.id : randomUUID();
+        topics.push({ id, ...fields, category: category.name, sort_order: ++maxSort, created_at: str(bt.created_at) || ts, updated_at: ts });
+        podUpdates.push([id, members]);
+        idMap.set(bt.id, id); result.topics.created++;
+      }
+    }
+    if (result.topics.created || result.topics.updated) { saveTopics(topics); for (const [tid, m] of podUpdates) setPod(tid, m); }
+
+    const reports = loadReports();
+    for (const br of Array.isArray(b.reports) ? b.reports : []) {
+      const topic_id = idMap.get(br && br.topic_id);
+      if (!topic_id || !isDate(str(br.period_end)) || !VALID_RAG.has(br.rag) || !VALID_TREND.has(br.trend)) { result.reports.skipped++; continue; }
+      const existing = reports.find((r) => r.id === br.id) || reports.find((r) => r.topic_id === topic_id && r.period_end === br.period_end);
+      const fields = { period_start: isDate(str(br.period_start)) ? br.period_start : addDaysIso(br.period_end, -4), period_end: br.period_end, exec_summary: str(br.exec_summary), achievements: str(br.achievements), next_steps: str(br.next_steps), rag: br.rag, trend: br.trend, gtg_plan: str(br.gtg_plan) };
+      if (existing) { Object.assign(existing, fields, { topic_id, updated_at: str(br.updated_at) || nowIso() }); result.reports.updated++; }
+      else { reports.push({ id: isId(br.id) && !reports.some((r) => r.id === br.id) ? br.id : randomUUID(), topic_id, ...fields, created_at: str(br.created_at) || br.period_end + 'T12:00:00.000Z', updated_at: str(br.updated_at) || nowIso() }); result.reports.created++; }
+    }
+    if (result.reports.created || result.reports.updated) saveReports(reports);
+
+    const kds = loadKeyDates();
+    for (const bk of Array.isArray(b.key_dates) ? b.key_dates : []) {
+      const topic_id = idMap.get(bk && bk.topic_id);
+      if (!topic_id || !isDate(str(bk.date)) || !str(bk.description).trim()) { result.key_dates.skipped++; continue; }
+      const existing = kds.find((k) => k.id === bk.id) || kds.find((k) => k.topic_id === topic_id && k.date === bk.date && k.description.toLowerCase() === str(bk.description).trim().toLowerCase());
+      const ts = nowIso();
+      if (existing) { Object.assign(existing, { topic_id, date: bk.date, description: str(bk.description).trim(), updated_at: ts }); result.key_dates.updated++; }
+      else { kds.push({ id: isId(bk.id) && !kds.some((k) => k.id === bk.id) ? bk.id : randomUUID(), topic_id, date: bk.date, description: str(bk.description).trim(), created_at: str(bk.created_at) || ts, updated_at: ts }); result.key_dates.created++; }
+    }
+    if (result.key_dates.created || result.key_dates.updated) saveKeyDates(kds);
+
+    const comments = loadComments();
+    for (const bc of Array.isArray(b.comments) ? b.comments : []) {
+      const topic_id = idMap.get(bc && bc.topic_id);
+      if (!topic_id || !isId(bc.id)) { result.comments.skipped++; continue; }
+      const existing = comments.find((c) => c.id === bc.id);
+      const row = { ...bc, topic_id };
+      if (existing) { Object.assign(existing, row); result.comments.updated++; } else { comments.push(row); result.comments.created++; }
+    }
+    if (result.comments.created || result.comments.updated) saveComments(comments);
+    return sendJson(res, 200, result);
+  }
+
   if (pathname === '/api/topics' && method === 'GET') {
     return sendJson(res, 200, topicsWithLatest());
   }
@@ -882,7 +1158,7 @@ async function handleApi(req, res, pathname, url) {
     const rows = loadTopics()
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
-      .map((t) => ({ ...t, active: t.active ? 'true' : 'false', pod: t.pod.map((m) => `${m.name} (${m.role})`).join('; ') }));
+      .map((t) => ({ ...t, due_day: DAY_NAMES[validDueDay(t.due_day) - 1], active: t.active ? 'true' : 'false', pod: t.pod.map((m) => `${m.name} (${m.role})`).join('; ') }));
     // BOM so Excel reads UTF-8 correctly.
     const body = Buffer.from('﻿' + serializeCsv(TOPIC_IMPORT_HEADERS, rows), 'utf8');
     res.writeHead(200, {
@@ -921,6 +1197,9 @@ async function handleApi(req, res, pathname, url) {
       const cadence = get('cadence').toLowerCase();
       const category = cats.find((c) => c.toLowerCase() === get('category').toLowerCase()) || '';
       const activeRaw = get('active').toLowerCase();
+      const dueRaw = get('due_day').toLowerCase();
+      const dueDay = dueRaw ? (DAY_NAMES.findIndex((d) => d.toLowerCase() === dueRaw || d.slice(0, 3).toLowerCase() === dueRaw) + 1 || (/^[1-5]$/.test(dueRaw) ? Number(dueRaw) : 0)) : 0;
+      if (dueRaw && !dueDay) return result.errors.push({ line, message: `due_day "${get('due_day')}" must be Monday to Friday` });
       if (!name && !existing) return result.errors.push({ line, message: 'name is required' });
       if (cadence && !VALID_CADENCES.has(cadence)) return result.errors.push({ line, message: `cadence "${cadence}" must be weekly, fortnightly or monthly` });
       if (get('category') && !category) return result.errors.push({ line, message: `unknown category "${get('category')}"` });
@@ -946,6 +1225,7 @@ async function handleApi(req, res, pathname, url) {
         if (name) { byName.delete(existing.name.toLowerCase()); existing.name = name; byName.set(name.toLowerCase(), existing); }
         for (const k of ['description', 'owner', 'business_unit']) if (get(k)) existing[k] = get(k);
         if (cadence) existing.cadence = cadence;
+        if (dueDay) existing.due_day = dueDay;
         if (category) existing.category = category;
         if (activeRaw) existing.active = active;
         existing.updated_at = ts;
@@ -954,7 +1234,7 @@ async function handleApi(req, res, pathname, url) {
       } else {
         const topic = {
           id: randomUUID(), name, description: get('description'), owner: get('owner'),
-          business_unit: get('business_unit'), category, cadence, active: activeRaw ? active : true,
+          business_unit: get('business_unit'), category, cadence, due_day: dueDay || 5, active: activeRaw ? active : true,
           sort_order: ++maxSort, created_at: ts, updated_at: ts
         };
         topics.push(topic);
@@ -997,6 +1277,7 @@ async function handleApi(req, res, pathname, url) {
       business_unit,
       category,
       cadence,
+      due_day: validDueDay(body.due_day),
       active: true,
       sort_order: maxSort + 1,
       created_at: ts,
@@ -1026,6 +1307,11 @@ async function handleApi(req, res, pathname, url) {
         return sendError(res, 400, 'cadence must be weekly, fortnightly, or monthly');
       }
       t.cadence = body.cadence;
+    }
+    if (body.due_day !== undefined) {
+      const n = Number(body.due_day);
+      if (!Number.isInteger(n) || n < 1 || n > 5) return sendError(res, 400, 'due_day must be 1 (Monday) to 5 (Friday)');
+      t.due_day = n;
     }
     if (body.category !== undefined) {
       if (!categoryNames().includes(body.category)) return sendError(res, 400, 'Choose a valid category');
@@ -1154,26 +1440,9 @@ async function handleApi(req, res, pathname, url) {
     const topics = loadTopics();
     if (!topics.find((t) => t.id === id)) return sendError(res, 404, 'Topic not found');
     const body = await readBody(req);
-    const period_start = (body.period_start || '').trim();
-    const period_end = (body.period_end || '').trim();
-    const exec_summary = body.exec_summary || '';
-    const achievements = body.achievements || '';
-    const next_steps = body.next_steps || '';
-    const rag = (body.rag || '').trim();
-    const trend = (body.trend || '').trim();
-    const gtg_plan = body.gtg_plan || '';
-
-    if (!period_start || !period_end) {
-      return sendError(res, 400, 'period_start and period_end are required');
-    }
-    if (!VALID_RAG.has(rag)) return sendError(res, 400, 'rag must be Red, Amber, Green, or Blue');
-    if (!VALID_TREND.has(trend)) {
-      return sendError(res, 400, 'trend must be Improving, Stable, or Declining');
-    }
-    if (isEmptyRich(exec_summary)) return sendError(res, 400, 'exec_summary is required');
-    if (rag !== 'Green' && rag !== 'Blue' && isEmptyRich(gtg_plan)) {
-      return sendError(res, 400, 'gtg_plan is required when RAG is Red or Amber');
-    }
+    const v = parseReportBody(body);
+    if (v.error) return sendError(res, 400, v.error);
+    const { period_start, period_end, exec_summary, achievements, next_steps, rag, trend, gtg_plan } = v;
 
     const ts = nowIso();
     const report = {
@@ -1186,7 +1455,7 @@ async function handleApi(req, res, pathname, url) {
       next_steps,
       rag,
       trend,
-      gtg_plan: (rag === 'Green' || rag === 'Blue') ? '' : gtg_plan,
+      gtg_plan,
       created_at: ts,
       updated_at: ts
     };
@@ -1199,6 +1468,34 @@ async function handleApi(req, res, pathname, url) {
     saveTopics(topics);
 
     return sendJson(res, 201, report);
+  }
+
+  const reportItemMatch = pathname.match(/^\/api\/reports\/([^/]+)$/);
+  if (reportItemMatch && method === 'PATCH') {
+    const id = decodeURIComponent(reportItemMatch[1]);
+    const reports = loadReports();
+    const idx = reports.findIndex((r) => r.id === id);
+    if (idx === -1) return sendError(res, 404, 'Report not found');
+    const v = parseReportBody({ ...reports[idx], ...(await readBody(req)) });
+    if (v.error) return sendError(res, 400, v.error);
+    const ts = nowIso();
+    reports[idx] = { ...reports[idx], ...v, updated_at: ts };
+    saveReports(reports);
+    const topics = loadTopics();
+    const topic = topics.find((t) => t.id === reports[idx].topic_id);
+    if (topic) { topic.updated_at = ts; saveTopics(topics); }
+    return sendJson(res, 200, reports[idx]);
+  }
+  if (reportItemMatch && method === 'DELETE') {
+    const id = decodeURIComponent(reportItemMatch[1]);
+    const reports = loadReports();
+    const target = reports.find((r) => r.id === id);
+    if (!target) return sendError(res, 404, 'Report not found');
+    saveReports(reports.filter((r) => r.id !== id));
+    const topics = loadTopics();
+    const topic = topics.find((t) => t.id === target.topic_id);
+    if (topic) { topic.updated_at = nowIso(); saveTopics(topics); }
+    return sendJson(res, 200, { ok: true });
   }
 
   const latestMatch = pathname.match(/^\/api\/topics\/([^/]+)\/latest$/);
