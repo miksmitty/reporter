@@ -999,15 +999,17 @@ async function handleApi(req, res, pathname, url) {
     if (!text.trim()) return sendError(res, 400, 'The CSV is empty');
     const rows = parseCsv(text);
     if (!rows.length) return sendError(res, 400, 'No data rows found');
-    if (!('date' in rows[0]) || !('topic' in rows[0] || 'topic_id' in rows[0])) return sendError(res, 400, 'The CSV needs "topic" (name) and "date" columns');
     const topics = loadTopics();
+    const defaultTopic = body.topic_id ? topics.find((t) => t.id === String(body.topic_id)) : null;
+    if (body.topic_id && !defaultTopic) return sendError(res, 404, 'Topic not found');
+    if (!('date' in rows[0]) || !('description' in rows[0]) || !(defaultTopic || 'topic' in rows[0] || 'topic_id' in rows[0])) return sendError(res, 400, defaultTopic ? 'The CSV needs "date" and "description" columns' : 'The CSV needs "topic" (name), "date" and "description" columns');
     const result = { created: 0, updated: 0, errors: [] };
     const all = loadKeyDates();
     rows.forEach((r, i) => {
       const line = i + 2;
       const get = (k) => String(r[k] == null ? '' : r[k]).trim();
       const err = (message) => result.errors.push({ line, message });
-      const topic = topics.find((t) => t.id === get('topic_id')) || topics.find((t) => t.name.toLowerCase() === get('topic').toLowerCase());
+      const topic = defaultTopic || topics.find((t) => t.id === get('topic_id')) || topics.find((t) => t.name.toLowerCase() === get('topic').toLowerCase());
       if (!topic) return err(`unknown topic "${get('topic') || get('topic_id')}" (create it first)`);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(get('date')) || Number.isNaN(Date.parse(get('date')))) return err('date must be YYYY-MM-DD');
       if (!get('description')) return err('description is required');

@@ -3528,8 +3528,33 @@ async function showKeyDates(topicId) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
+  const imp = document.createElement('button');
+  imp.type = 'button';
+  imp.className = 'btn btn-primary';
+  imp.textContent = 'Import CSV…';
+  const tpl = document.createElement('a');
+  tpl.className = 'btn btn-ghost';
+  tpl.href = 'api/templates/key-dates.csv';
+  tpl.download = 'key_dates_template.csv';
+  tpl.textContent = 'Template';
+  const file = document.createElement('input');
+  file.type = 'file';
+  file.accept = '.csv,text/csv';
+  file.hidden = true;
+  imp.addEventListener('click', () => file.click());
+  file.addEventListener('change', async () => {
+    const f = file.files[0];
+    file.value = '';
+    if (!f) return;
+    try {
+      const res = await api('/api/key-dates/import', { method: 'POST', body: JSON.stringify({ csv: await f.text(), topic_id: topicId }) });
+      const errs = res.errors || [];
+      toast(`Imported: ${res.created} added, ${res.updated} updated` + (errs.length ? `, ${errs.length} skipped (first: line ${errs[0].line} ${errs[0].message})` : ''), errs.length && !res.created && !res.updated ? 'error' : 'ok');
+      showKeyDates(topicId);
+    } catch (err) { toast(err.message, 'error'); }
+  });
   const acts = document.createElement('div');
-  acts.append(back, ' ', exp);
+  acts.append(back, ' ', imp, ' ', exp, ' ', tpl, file);
   head.appendChild(acts);
   app.appendChild(head);
 
