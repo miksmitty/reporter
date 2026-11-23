@@ -249,6 +249,28 @@ class PdfDoc {
   }
 }
 
+/** Key dates falling in the calendar quarter of `weekEnding`, numbered, with 0..1 positions along the quarter. */
+function quarterTimeline(weekEnding, keyDates) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(weekEnding || '');
+  if (!m) return null;
+  const y = Number(m[1]);
+  const q = Math.floor((Number(m[2]) - 1) / 3);
+  const start = Date.UTC(y, q * 3, 1);
+  const end = Date.UTC(y, q * 3 + 3, 1);
+  const items = (keyDates || [])
+    .map((k) => ({ ...k, t: Date.parse(`${k.date}T00:00:00Z`) }))
+    .filter((k) => !Number.isNaN(k.t) && k.t >= start && k.t < end)
+    .sort((a, b) => a.t - b.t)
+    .map((k, i) => ({ n: i + 1, date: k.date, description: k.description || '', pos: (k.t - start) / (end - start) }));
+  const now = Date.now();
+  return {
+    label: `Q${q + 1} ${y}`,
+    months: [0, 1, 2].map((i) => MONTHS[q * 3 + i]),
+    items,
+    todayPos: now >= start && now < end ? (now - start) / (end - start) : null
+  };
+}
+
 function buildPdf(bundle) {
   const items = bundle.items || [];
   const doc = new PdfDoc(`Key Topics Reporting — week ending ${fmtDate(bundle.week_ending)}`);
@@ -308,9 +330,9 @@ function buildPdf(bundle) {
   for (const it of items) {
     const { topic, report } = it;
     const rag = RAG[report.rag];
-    const keyDates = (it.key_dates || []).filter((k) => k.date || k.description);
-    const dateW = keyDates.length ? 150 : 0;
-    const colGap = keyDates.length ? 18 : 0;
+    const qt = quarterTimeline(bundle.week_ending, (it.key_dates || []).filter((k) => k.date));
+    const dateW = 150;
+    const colGap = 18;
     const mainW = CONTENT_W - dateW - colGap;
     const blocks = {
       exec: htmlBlocks(report.exec_summary),
@@ -349,25 +371,41 @@ function buildPdf(bundle) {
     section('Next steps', blocks.next, 10); // always below achievements
     section('Plan to get to Green', blocks.gtg, 10);
 
-    // Key dates timeline to the right of the commentary (first page of the topic only)
-    if (keyDates.length) {
+    // Quarter timeline of key dates to the right of the commentary (first page of the topic only)
+    {
       const x = MARGIN + mainW + colGap;
       let y = sectionTop - 10;
-      doc.text('KEY DATES', x, y, 8, MUTED, true);
-      y -= 8;
-      const startY = y;
-      let need = 0;
-      for (const k of keyDates) {
-        const h = 12 + wrap(k.description || '', 9, false, dateW - 18).length * 11.5 + 8;
-        if (startY - need - h < MARGIN + 14) break;
-        need += h;
+      doc.text(`${qt.label} KEY DATES`, x, y, 8, MUTED, true);
+      y -= 20;
+      const barW = dateW - 6;
+      const bx = (pos) => x + 5 + pos * (barW - 10);
+      doc.rect(x, y, barW, 2, RULE);
+      qt.months.forEach((mn, i) => doc.text(mn, x + (barW / 3) * i, y - 14, 7, MUTED, false));
+      if (qt.todayPos != null) {
+        doc.rect(bx(qt.todayPos) - 0.5, y + 8, 1, 14, RAG.Red.rgb);
+        doc.text('Today', bx(qt.todayPos) - 9, y + 24, 6.5, RAG.Red.rgb, false);
       }
-      doc.ops.push(`${rgb(RULE)} RG 1 w ${n2(x + 4.5)} ${n2(startY - 2)} m ${n2(x + 4.5)} ${n2(startY - need + 6)} l S`);
-      for (const k of keyDates) {
-        const desc = wrap(k.description || '', 9, false, dateW - 18);
-        const h = 12 + desc.length * 11.5 + 8;
+      let lastX = -99; let up = false;
+      for (const k of qt.items) {
+        const cx = bx(k.pos);
+        up = cx - lastX < 12 ? !up : false;
+        lastX = cx;
+        const my = y + 1 + (up ? 12 : 0);
+        doc.rect(cx - 5, my + 5, 10, 10, rag ? rag.rgb : MUTED);
+        const label = String(k.n);
+        doc.text(label, cx - textWidth(label, 6.5, true) / 2, my + 8, 6.5, [255, 255, 255], true);
+      }
+      y -= 32;
+      if (!qt.items.length) {
+        doc.text('None this quarter', x, y, 9, MUTED, false);
+      }
+      for (const k of qt.items) {
+        const desc = wrap(k.description, 9, false, dateW - 20);
+        const h = 12 + desc.length * 11.5 + 6;
         if (y - h < MARGIN + 14) break;
-        doc.rect(x + 1.5, y - 1, 6, 6, rag ? rag.rgb : MUTED);
+        doc.rect(x, y + 1, 11, 11, rag ? rag.rgb : MUTED);
+        const label = String(k.n);
+        doc.text(label, x + 5.5 - textWidth(label, 7, true) / 2, y - 6.5, 7, [255, 255, 255], true);
         doc.text(fmtDate(k.date), x + 16, y - 7, 8.5, MUTED, true);
         desc.forEach((ln, i) => doc.text(ln, x + 16, y - 19 - i * 11.5, 9, INK, false));
         y -= h;
@@ -541,7 +579,7 @@ function buildPptxSlides(bundle) {
   for (const it of items) {
     const { topic, report } = it;
     const rag = RAG[report.rag];
-    const keyDates = (it.key_dates || []).filter((k) => k.date || k.description);
+    const qt = quarterTimeline(bundle.week_ending, (it.key_dates || []).filter((k) => k.date));
     const s = new Slide();
     s.rect(0, 0, SLIDE_W, 84, PANEL);
     s.rect(0, 0, 10, 84, rag ? rag.rgb : MUTED);
@@ -552,8 +590,8 @@ function buildPptxSlides(bundle) {
     const ang = trendAngle(report.trend);
     if (ang != null) s.arrow(893, 42, 30, ang, INK);
 
-    const dateW = keyDates.length ? 210 : 0;
-    const mainW = 880 - dateW - (keyDates.length ? 24 : 0);
+    const dateW = 210;
+    const mainW = 880 - dateW - 24;
     const gtg = report.rag !== 'Green' && report.rag !== 'Blue' ? htmlBlocks(report.gtg_plan) : [];
     const exec = htmlBlocks(report.exec_summary);
     const ach = htmlBlocks(report.achievements);
@@ -577,18 +615,38 @@ function buildPptxSlides(bundle) {
       y += h + 20;
     });
 
-    if (keyDates.length) {
+    {
       const x = 40 + mainW + 24;
+      const col = rag ? rag.rgb : MUTED;
       s.rect(x - 12, 98, 0.75, 400, RULE);
-      s.text(x, 98, dateW, 16, [{ text: 'KEY DATES', size: 10, bold: true, color: MUTED }]);
-      const maxN = Math.min(keyDates.length, 8);
-      const step = Math.min(50, 380 / maxN);
-      keyDates.slice(0, maxN).forEach((k, i) => {
-        const yy = 122 + i * step;
-        s.rect(x, yy + 3, 9, 9, rag ? rag.rgb : MUTED, { geom: 'ellipse' });
-        s.text(x + 18, yy - 1, dateW - 18, step, [
+      s.text(x, 98, dateW, 16, [{ text: `${qt.label} KEY DATES`, size: 10, bold: true, color: MUTED }]);
+      const barY = 146;
+      s.rect(x, barY, dateW, 3, RULE);
+      qt.months.forEach((mn, i) => s.text(x + (dateW / 3) * i, barY + 22, dateW / 3, 14, [{ text: mn, size: 9, color: MUTED }]));
+      const bx = (pos) => x + 8 + pos * (dateW - 16);
+      if (qt.todayPos != null) {
+        s.rect(bx(qt.todayPos) - 0.75, barY - 16, 1.5, 36, RAG.Red.rgb);
+        s.text(bx(qt.todayPos) - 20, barY - 30, 40, 13, [{ text: 'Today', size: 8, color: RAG.Red.rgb }], { align: 'ctr' });
+      }
+      let lastX = -99; let up = false;
+      for (const k of qt.items) {
+        const cx = bx(k.pos);
+        up = cx - lastX < 16 ? !up : false;
+        lastX = cx;
+        const cy = barY + 1.5 - (up ? 17 : 0);
+        s.text(cx - 8, cy - 8, 16, 16, [{ text: String(k.n), size: 8, bold: true, color: [255, 255, 255] }],
+          { fill: col, anchor: 'ctr', align: 'ctr', geom: 'ellipse' });
+      }
+      const top = 188;
+      if (!qt.items.length) s.text(x, top, dateW, 16, [{ text: 'None this quarter', size: 11, color: MUTED }]);
+      const maxN = Math.min(qt.items.length, 7);
+      const step = Math.min(44, 300 / Math.max(maxN, 1));
+      qt.items.slice(0, maxN).forEach((k, i) => {
+        const yy = top + i * step;
+        s.text(x, yy, 16, 16, [{ text: String(k.n), size: 8, bold: true, color: [255, 255, 255] }], { fill: col, anchor: 'ctr', align: 'ctr', geom: 'ellipse' });
+        s.text(x + 22, yy - 2, dateW - 22, step, [
           { text: fmtDate(k.date), size: 10, bold: true, color: MUTED, after: 1 },
-          { text: k.description || '', size: 11, after: 0 }
+          { text: k.description, size: 11, after: 0 }
         ]);
       });
     }

@@ -3384,10 +3384,15 @@ async function showWeekly(initialEnding) {
         data.week_ending,
         item.key_dates || topic.key_dates || []
       );
-      if (kdGrid) {
+      const allKd = item.key_dates || topic.key_dates || [];
+      if (kdGrid || allKd.length) {
         const kdWrap = document.createElement('div');
         kdWrap.className = 'weekly-kd';
-        kdWrap.appendChild(kdGrid);
+        const qtWrap = document.createElement('div');
+        qtWrap.className = 'weekly-qt report-section';
+        qtWrap.innerHTML = quarterTimelineHtml(allKd, data.week_ending);
+        kdWrap.appendChild(qtWrap);
+        if (kdGrid) kdWrap.appendChild(kdGrid);
         mainRow.appendChild(kdWrap);
         mainRow.classList.add('has-key-dates');
       } else {
@@ -3395,10 +3400,6 @@ async function showWeekly(initialEnding) {
       }
 
       section.appendChild(mainRow);
-      const qtWrap = document.createElement('div');
-      qtWrap.className = 'weekly-qt report-section';
-      qtWrap.innerHTML = quarterTimelineHtml(item.key_dates || topic.key_dates || [], data.week_ending);
-      section.appendChild(qtWrap);
       pack.appendChild(section);
     }
 
