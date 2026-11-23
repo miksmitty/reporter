@@ -1290,6 +1290,27 @@ async function handleApi(req, res, pathname, url) {
   }
 
   const topicMatch = pathname.match(/^\/api\/topics\/([^/]+)$/);
+  // Delete a topic and everything attached to it: reports, key dates, review comments and POD.
+  if (topicMatch && method === 'DELETE') {
+    const id = decodeURIComponent(topicMatch[1]);
+    const topics = loadTopics();
+    if (!topics.find((t) => t.id === id)) return sendError(res, 404, 'Topic not found');
+    const reports = loadReports();
+    const kds = loadKeyDates();
+    const comments = loadComments();
+    const removed = {
+      reports: reports.filter((r) => r.topic_id === id).length,
+      key_dates: kds.filter((k) => k.topic_id === id).length,
+      comments: comments.filter((c) => c.topic_id === id).length
+    };
+    saveReports(reports.filter((r) => r.topic_id !== id));
+    saveKeyDates(kds.filter((k) => k.topic_id !== id));
+    saveComments(comments.filter((c) => c.topic_id !== id));
+    savePodRows(loadPodRows().filter((r) => r.topic_id !== id));
+    saveTopics(topics.filter((t) => t.id !== id));
+    return sendJson(res, 200, { ok: true, removed });
+  }
+
   if (topicMatch && method === 'PATCH') {
     const id = decodeURIComponent(topicMatch[1]);
     const body = await readBody(req);

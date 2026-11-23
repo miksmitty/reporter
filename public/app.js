@@ -1058,7 +1058,26 @@ function renderHome(topics) {
       <select id="bulk-field">${Object.entries(BULK_FIELDS).map(([k, v]) => `<option value="${k}"${k === field ? ' selected' : ''}>Set ${v.label.toLowerCase()}</option>`).join('')}</select>
       ${f.text ? '<input id="bulk-value" type="text" placeholder="New value" />' : `<select id="bulk-value">${f.options.map(([v, l]) => `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`).join('')}</select>`}
       <button type="button" class="btn btn-primary btn-sm" data-apply>Apply to ${selected.size}</button>
+      <button type="button" class="btn btn-ghost btn-sm btn-danger" data-del>Delete ${selected.size}</button>
       <button type="button" class="btn btn-ghost btn-sm" data-clear>Clear selection</button>`;
+    bulk.querySelector('[data-del]').addEventListener('click', async () => {
+      const ids = [...selected];
+      const names = ids.map((id) => (topics.find((x) => x.id === id) || {}).name).filter(Boolean);
+      const list = names.slice(0, 5).join(', ') + (names.length > 5 ? ` and ${names.length - 5} more` : '');
+      if (!window.confirm(`Permanently delete ${ids.length} topic${ids.length === 1 ? '' : 's'} (${list}) along with all their reports, key dates, review comments and POD? This can’t be undone.`)) return;
+      let ok = 0; const failed = [];
+      for (const id of ids) {
+        try {
+          await api('/api/topics/' + encodeURIComponent(id), { method: 'DELETE' });
+          const i = topics.findIndex((x) => x.id === id); if (i >= 0) topics.splice(i, 1);
+          const j = active.findIndex((x) => x.id === id); if (j >= 0) active.splice(j, 1);
+          selected.delete(id); ok++;
+        } catch (err) { failed.push(err.message); }
+      }
+      toast(`${ok} topic${ok === 1 ? '' : 's'} deleted${failed.length ? `; ${failed.length} failed: ${failed[0]}` : ''}`, failed.length ? 'error' : undefined);
+      if (!active.length) return showHome();
+      paint();
+    });
     bulk.querySelector('#bulk-field').addEventListener('change', (e) => { bulk.dataset.field = e.target.value; paintBulk(); });
     bulk.querySelector('[data-clear]').addEventListener('click', () => { selected.clear(); paint(); });
     bulk.querySelector('[data-apply]').addEventListener('click', async (e) => {
